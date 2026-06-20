@@ -1,0 +1,41 @@
+[package]
+name = "waymux-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "waymux control-plane daemon (waymuxd)."
+publish = false  # internal binary, not a crates.io showcase lib (only protocol + mux-mkv publish)
+
+[[bin]]
+name = "waymuxd"
+path = "src/main.rs"
+
+[dependencies]
+waymux-protocol = { workspace = true }
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+libc = "0.2"
+serde_json = { version = "1", optional = true }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "serde-well-known"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+# The `metering` feature is off by default. It compiles a usage-events
+# JSONL + api_key_id pipeline and its deps (time, uuid, serde_json).
+# Default builds omit it entirely.
+[features]
+default = []
+metering = ["dep:serde_json", "dep:time", "dep:uuid"]
+
+[dev-dependencies]
+tempfile = "3"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.31", features = ["client"] }
+png = "0.17"

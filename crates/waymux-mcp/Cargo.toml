@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "waymux-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Model Context Protocol (MCP) server for waymux. A thin stdio JSON-RPC wrapper that executes the `waymux` CLI (pi-harness model): every MCP tool maps to one discrete CLI verb and runs it via argv (no shell)."
+publish = false  # internal binary, not a crates.io showcase lib (only protocol + mux-mkv publish)
+
+[[bin]]
+name = "waymux-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "waymux_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

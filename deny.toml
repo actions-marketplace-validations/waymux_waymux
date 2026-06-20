@@ -1,0 +1,45 @@
+# deny.toml: supply-chain gating for the public waymux workspace
+#
+# Run locally: cargo deny check
+# Public CI runs the same command on every push/PR.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # Add advisory IDs here only with a one-line WHY and a date.
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",  # webpki-roots ships the Mozilla CA root list under this; data-only, permissive
+    "WTFPL",  # ffmpeg-sys-next / ffmpeg-next Rust wrappers (used by waymux-session) carry a WTFPL component; permissive, no-restriction
+]
+confidence-threshold = 0.9
+exceptions = [
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+]
+skip = [
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

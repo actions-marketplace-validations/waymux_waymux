@@ -1,0 +1,28 @@
+[package]
+name = "waymux-mux-mkv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Streaming Matroska/MKV muxer for in-process H.264 recording."
+repository = "https://github.com/waymux/waymux"
+homepage = "https://github.com/waymux/waymux"
+readme = "README.md"
+keywords = ["matroska", "mkv", "muxer", "h264", "ebml"]
+categories = ["multimedia::video", "multimedia::encoding"]
+publish = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Intentionally zero deps. EBML is a small wire format and the goal of
+# this crate is to remove the ffmpeg subprocess; pulling in a half-MB
+# dependency tree would defeat the point. If we ever need audio mux we
+# can lift `byteorder` style helpers from std.
+
+[dev-dependencies]
+# For round-tripping our output through a known-good demuxer in tests.
+# This adds a transitive ffmpeg dep at *test* time only; release builds
+# do not include it.
+tempfile = "3"

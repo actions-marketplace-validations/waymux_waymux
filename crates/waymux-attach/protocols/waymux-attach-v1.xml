@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="waymux_attach_v1">
+  <copyright>
+    SPDX-License-Identifier: MIT OR Apache-2.0
+
+    Copyright © 2026 waymux contributors
+
+    Mirrors SPEC.md §5. Version 1. Kept in sync with the copy under
+    `crates/waymux-session/protocols/` — both point at the same protocol.
+  </copyright>
+
+  <interface name="waymux_attach_v1" version="1">
+    <request name="get_surface">
+      <arg name="id" type="new_id" interface="wl_surface"/>
+      <arg name="outer_display_fd" type="fd"/>
+    </request>
+    <request name="detach" type="destructor"/>
+    <event name="frame">
+      <arg name="serial" type="uint"/>
+      <arg name="timestamp_ns" type="uint"/>
+    </event>
+    <event name="resized">
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+    <event name="occluded">
+      <arg name="is_occluded" type="uint"/>
+    </event>
+  </interface>
+</protocol>

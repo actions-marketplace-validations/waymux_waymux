@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/waymux-protocol",
+    # "crates/waymux-core",   # uncomment when Phase 1 authors waymux-core
+    "crates/waymux-daemon",
+    "crates/waymux-session",
+    "crates/waymux-attach",
+    "crates/waymux-cli",
+    "crates/waymux-mcp",
+    "crates/waymux-mux-mkv",
+]
+
+[workspace.package]
+version = "0.2.0-dev"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+# Internal first-party crate. Pin to the workspace version to keep
+# cargo-deny's wildcard check happy (it treats unversioned path-deps as
+# wildcards in any crate that isn't `publish = false`).
+waymux-protocol = { path = "crates/waymux-protocol", version = "0.2.0-dev" }
+
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1.3"
+rmpv = { version = "1.3", features = ["with-serde"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "1"
+
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Keep line tables in release so SIGSEGV handlers and backtraces show
+# function names. Strip binaries in CI if size matters.
+debug = 1
+strip = "none"
+
+[profile.release-prod]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

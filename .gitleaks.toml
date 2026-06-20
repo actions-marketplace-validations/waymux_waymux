@@ -1,0 +1,20 @@
+# .gitleaks.toml
+# Secret-scan config for the public WayMux repo. Extends gitleaks' default
+# ruleset and allowlists synthetic test fixtures (verified non-secret).
+#
+# Consumed by scripts/publish-orphan-release.sh (passed via --config) and by
+# the public CI gitleaks job (gitleaks loads a repo-root .gitleaks.toml).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic tokens/keys in test fixtures, not real credentials."
+# Test sources carry fake JWTs (e.g. jwt_test.go goldenToken, sub=1111...),
+# scrubbed TURN hostnames, fake API keys (wmx_test_*), and deterministic
+# Ed25519 test seeds used to exercise auth parsing/validation. All reviewed as
+# synthetic. Exclude test sources from secret scanning.
+paths = [
+  '''.*_test\.go$''',
+  '''crates/.*/tests/.*\.rs$''',
+]

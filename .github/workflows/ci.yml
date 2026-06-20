@@ -1,0 +1,207 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  rust:
+    name: rust (${{ matrix.check }} / ${{ matrix.toolchain }})
+    runs-on: ubuntu-24.04
+    # The repo ships a rust-toolchain.toml (channel = "stable") for local-dev
+    # convenience, but a directory toolchain file overrides `rustup default`,
+    # which would silently float this gate to whatever `stable` is (defeating
+    # the pin and the MSRV rows). RUSTUP_TOOLCHAIN wins over rust-toolchain.toml,
+    # so force the matrix toolchain: the 1.94 lint/fmt/test gate and the 1.88
+    # MSRV rows are then actually reproducible.
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned, not floating `stable`, so the clippy `-D warnings` gate is
+        # reproducible: a new Rust release can add lints that break CI with no
+        # code change. Bump this deliberately (and fix any new lints) instead.
+        # The 1.88 row below is the MSRV gate; this row is the lint/fmt/test gate.
+        toolchain: ["1.94"]
+        check: [fmt, clippy, test]
+        include:
+          # MSRV: verify the publishable library + binaries build on 1.88. This
+          # is a `cargo build --workspace` (no --all-targets), so it excludes
+          # dev-deps: some (e.g. wiremock) require a newer Rust for their own
+          # code, which is irrelevant to the crates' MSRV. Tests run on 1.94.
+          - toolchain: "1.88"
+            check: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+
+      - name: Install system deps
+        # wayland-server / wayland-protocols need libwayland headers; the
+        # session crate's build.rs links gbm + avutil and compiles a small
+        # ffmpeg C shim, so ffmpeg + gbm + vulkan dev headers are required.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libgbm-dev \
+            libavutil-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavdevice-dev \
+            libswscale-dev \
+            libswresample-dev \
+            libvulkan-dev \
+            libxkbcommon-dev \
+            pkg-config \
+            build-essential
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.toolchain }}
+
+      - name: fmt
+        if: matrix.check == 'fmt'
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        if: matrix.check == 'clippy'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: build
+        if: matrix.check == 'build'
+        # No --all-targets: the MSRV gate covers the publishable lib + bins, not
+        # the test/bench targets (which pull dev-deps that need a newer Rust).
+        run: cargo build --workspace
+
+      - name: test
+        if: matrix.check == 'test'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: cargo test --workspace --all-targets --no-fail-fast
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  publish-dryrun:
+    name: cargo publish --dry-run (publishable libs)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev pkg-config build-essential
+      - uses: Swatinem/rust-cache@v2
+      # waymux-protocol and waymux-mux-mkv are the publishable libs. Both
+      # are leaf/near-leaf (protocol depends only on crates.io deps;
+      # mux-mkv has zero deps), so --dry-run resolves against crates.io.
+      - name: publish dry-run waymux-protocol
+        run: cargo publish --dry-run -p waymux-protocol
+      - name: publish dry-run waymux-mux-mkv
+        run: cargo publish --dry-run -p waymux-mux-mkv
+
+  neko-bridge:
+    name: go neko-bridge build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: crates/waymux-neko-bridge/go.sum
+      - name: build neko-bridge from source
+        working-directory: crates/waymux-neko-bridge
+        run: |
+          go build -o waymux-neko-bridge .
+          test -x ./waymux-neko-bridge
+      - name: go vet
+        working-directory: crates/waymux-neko-bridge
+        run: go vet ./...
+
+  dep-isolation:
+    name: paid-dependency isolation guard
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev pkg-config build-essential
+      - name: cargo-tree paid-dep guard
+        run: ./ci/cargo-tree-guard.sh
+
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Use the gitleaks BINARY directly: gitleaks-action@v2 requires a paid
+      # GITLEAKS_LICENSE for GitHub organizations, but the CLI is free. Fetch
+      # the latest linux release dynamically so this does not rot.
+      - name: Install gitleaks
+        run: |
+          url=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep -oE 'https://[^"]*_linux_x64\.tar\.gz' | head -1)
+          echo "installing gitleaks from $url"
+          curl -fsSL "$url" | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: gitleaks detect
+        run: gitleaks detect --source . --config .gitleaks.toml --no-banner --redact
+
+  repo-hygiene:
+    name: repo hygiene (no internal-tree leaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      # This is a public mirror of a larger private tree. Fail if internal
+      # process jargon, dead references to non-shipped docs, or developer
+      # paths slip into the source comments. ISO standard section refs
+      # (e.g. "ISO 14496-15 5.3.3.1") are legitimate and not matched here.
+      - name: scan source + docs for internal leaks
+        run: |
+          # Process jargon, dead references to non-shipped docs, version
+          # codenames, internal RFC numbers, and the private ops doc dir.
+          # ISO standard section refs (e.g. "ISO 14496-15 5.3.3.1") are
+          # legitimate and not matched here.
+          jargon='SPEC ?§|SPEC\.md|\bV[0-9]\.[0-9][A-Za-z]?\b|Plan [A-Z]\b|Sprint [0-9]|Task #?[0-9]+|eng-[0-9]+|\bWS[0-9]\b|SecOps|\bPhase [A-F]\b|RFC 20[0-9]|RFC build|week [0-9]|\.claude|docs/superpowers|docs/saas|[Hh]yperstack'
+          fail=0
+          # Source comments may not contain any developer home path.
+          if grep -rEn "$jargon|/home/[a-z]" crates --include='*.rs' --include='*.go'; then fail=1; fi
+          # Published docs/scripts/tests: same jargon, plus the literal
+          # developer home. (Docs use "/home/you" as an illustrative path
+          # placeholder, which is allowed; "/home/user" is a real leak.)
+          if grep -rEn "$jargon|/home/user" \
+               README.md ARCHITECTURE.md ROADMAP.md CHANGELOG.md \
+               CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md \
+               docs scripts tests \
+               --include='*.md' --include='*.sh' --include='*.py' 2>/dev/null; then fail=1; fi
+          if [ "$fail" = 1 ]; then
+            echo "::error::internal-tree leak above (jargon, dead doc reference, or developer path). Rewrite to describe behavior without internal references."
+            exit 1
+          fi
+          echo "clean: no internal-tree leaks in the published surface"

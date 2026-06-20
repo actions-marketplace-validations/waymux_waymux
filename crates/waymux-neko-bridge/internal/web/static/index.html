@@ -1,0 +1,1849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes">
+<title>waymux viewer</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #111; color: #ddd; font-family: ui-monospace, monospace; height: 100%; overflow: hidden; }
+  #stage { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  /* touch-action: manipulation — re-enable browser-native pinch-zoom + pan.
+   *  The two-finger gesture classifier in JS preventDefault()s only when it
+   *  decides the gesture is a parallel scroll; pinch + post-zoom pan fall
+   *  through to the browser. The `none` value would block all of that. */
+  video { max-width: 100%; max-height: 100%; background: #000; outline: 1px solid #333; cursor: crosshair; touch-action: manipulation; }
+  #log { position: fixed; bottom: 0; left: 0; right: 0; max-height: 30%; overflow: auto; background: #000a; padding: 6px 10px; font-size: 12px; pointer-events: none; }
+  /* Lift log above the persistent Termux bar on touch devices so they don't overlap. */
+  @media (pointer: coarse) { #log { bottom: 88px; max-height: 25%; } }
+  /* Hidden state for the on-screen log; toggle via #log-toggle. The
+   * log is useful for debugging but clutters the desktop view in
+   * normal use — customer can hide. Persisted in localStorage. */
+  body.log-hidden #log { display: none; }
+  #log-toggle {
+    background: #1a1a1a; color: #ddd;
+    border: 1px solid #333; border-radius: 4px;
+    padding: 8px 12px; font-family: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  #log-toggle.log-hidden-active {
+    background: #1a1a1a; color: #888; border-color: #2a2a2a;
+  }
+  /* task #124: top-left "viewport-info" container holds #status +
+   * #fps. Visual-viewport-pegged via pegViewportInfo() so both
+   * elements stay screen-fixed during pinch-zoom + pan (same pattern
+   * as #viewport-controls on the right). Without this, pinch-zoom
+   * scales these to giant size + they drift off-screen during pan. */
+  #viewport-info {
+    position: fixed; top: 0; left: 0; z-index: 100;
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 8px;
+    transform-origin: top left;
+    will-change: transform;
+    pointer-events: none;
+  }
+  #status { background: #000a; color: #ddd; padding: 4px 8px; font-size: 12px; border-radius: 3px; align-self: flex-start; }
+
+  /* launch-E (2026-05-24): connection-lost overlay. Shown over the
+   * whole viewport when the WS or PC disconnects after a successful
+   * connect. Backdrop is semi-transparent so the customer can see
+   * their (frozen) last frame underneath — helps them realize they
+   * haven't been kicked, just temporarily disconnected.
+   * Hidden by default via display:none; the JS toggles it. */
+  #reconnect-overlay {
+    display: none;
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(11, 18, 32, 0.85);
+    backdrop-filter: blur(2px);
+    align-items: center; justify-content: center;
+    color: #e6edf7;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  #reconnect-overlay.visible { display: flex; }
+  #reconnect-card {
+    background: #0f1828; border: 1px solid #1f2c47; border-radius: 8px;
+    padding: 28px 32px; max-width: 380px; text-align: center;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  }
+  #reconnect-card h2 {
+    margin: 0 0 8px; font-size: 20px; font-weight: 700;
+    color: #fbbf24; /* amber — attention, not error */
+  }
+  #reconnect-card p { margin: 8px 0; color: #9aa7c0; font-size: 14px; line-height: 1.5; }
+  #reconnect-card .countdown { color: #e6edf7; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #reconnect-card button {
+    margin-top: 18px; padding: 8px 18px; border-radius: 6px;
+    background: #1f2c47; color: #e6edf7; border: 1px solid #2c3e63;
+    cursor: pointer; font-size: 14px; font-weight: 600;
+    font-family: inherit;
+  }
+  #reconnect-card button:hover { background: #2c3e63; }
+  #reconnect-card.gave-up h2 { color: #ef4444; }
+
+  /* task #120: FPS meter overlay. Shows
+   * "decoded:N  src:M  drop:K" — RTCRtpReceiver.getStats() + bridge
+   * srcFps push. */
+  #fps {
+    background: #000a; color: #4ade80;
+    padding: 4px 8px; font-size: 11px; font-family: ui-monospace, monospace;
+    border-radius: 3px;
+    letter-spacing: 0.02em;
+    align-self: flex-start;
+  }
+  body.fps-hidden #fps { display: none; }
+
+  /* task #113/120: touch cursor is a CLICK VISUAL, not a finger-tracker.
+   * Two states:
+   *   - `.ripple` / `.ripple-right` — expanding ring + fade animation,
+   *     fired on every click event (quick tap or 2-finger right-click).
+   *     Decouples the "I clicked something" feedback from "where is my
+   *     finger right now", which gets noisy during pans / hovers.
+   *   - `.dragging` — solid green cursor visible for the duration of a
+   *     long-press drag (button held on remote). Follows the finger
+   *     while the drag is active.
+   * Idle / hover / pan-without-click: cursor is invisible. */
+  #touch-cursor {
+    position: fixed;
+    border-radius: 50%;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+    z-index: 50;
+    opacity: 0;
+    width: 16px; height: 16px;
+    border: 2px solid #00d9ff;
+    background: rgba(0, 217, 255, 0.28);
+    will-change: width, height, opacity;
+  }
+  #touch-cursor::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #00d9ff;
+    transform: translate(-50%, -50%);
+  }
+  /* Quick-tap (left-click) ripple: cyan, expands and fades over 480ms. */
+  #touch-cursor.ripple {
+    animation: touch-ripple 480ms ease-out forwards;
+  }
+  @keyframes touch-ripple {
+    0%   { width: 16px; height: 16px; opacity: 1; border-width: 3px; }
+    60%  { opacity: 0.7; }
+    100% { width: 84px; height: 84px; opacity: 0; border-width: 1px; }
+  }
+  /* 2-finger right-click ripple: orange so user can distinguish from a
+   * left-click visually. */
+  #touch-cursor.ripple-right {
+    border-color: #fb923c;
+    background: rgba(251, 146, 60, 0.28);
+    animation: touch-ripple-right 480ms ease-out forwards;
+  }
+  #touch-cursor.ripple-right::after { background: #fb923c; }
+  @keyframes touch-ripple-right {
+    0%   { width: 16px; height: 16px; opacity: 1; border-width: 3px; }
+    60%  { opacity: 0.7; }
+    100% { width: 84px; height: 84px; opacity: 0; border-width: 1px; }
+  }
+  /* Long-press drag: solid green cursor visible until drag ends. */
+  #touch-cursor.dragging {
+    opacity: 1;
+    animation: none;
+    width: 32px; height: 32px;
+    border-color: #4ade80;
+    background: rgba(74, 222, 128, 0.18);
+    transition: left 60ms linear, top 60ms linear;
+  }
+  #touch-cursor.dragging::after {
+    background: #4ade80;
+    width: 8px; height: 8px;
+  }
+
+  /* task #115/116: viewport-pegged control row in the top-right.
+   * Houses the Pan toggle + Log toggle. Pinned to the VISUAL viewport
+   * (pinch-zoom-aware) via pegViewportControls() in JS, same pattern
+   * the kbd-bar uses. Without that JS peg, `position: fixed` anchors
+   * to the LAYOUT viewport, which means when the user pinch-zooms,
+   * the buttons can drift off-screen or float in the wrong spot. */
+  #viewport-controls {
+    position: fixed; top: 0; left: 0; z-index: 100;
+    display: flex; gap: 8px; padding: 8px;
+    transform-origin: top left;
+    will-change: transform;
+    user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  /* Fallback positioning when JS hasn't run yet OR visualViewport is absent. */
+  #viewport-controls.no-peg { left: auto; right: 0; }
+
+  /* task #115: pan-mode toggle. */
+  #mode-toggle {
+    background: #1a1a1a; color: #ddd;
+    border: 1px solid #333; border-radius: 4px;
+    padding: 8px 14px; font-family: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  /* Blue "active" highlight = TRACKPAD enabled (the opt-in state). Pan is the
+   * default and shows unhighlighted. */
+  #mode-toggle.active {
+    background: #00d9ff; color: #000; border-color: #00d9ff;
+  }
+  /* Pan mode reuses the same click ripple — a quick tap inside pan mode
+   * still fires a click and shows the cyan ripple. Continuous tracking
+   * during a pan/pinch gesture is intentionally NOT drawn (it was noisy
+   * — the user reported it firing on every pan motion). */
+
+  /* ── Mobile soft-keyboard (Task #42) ──
+   *
+   * `kbd-input` is a real <textarea> positioned just off-screen so it can be
+   *  focused by code (popping the OS soft keyboard) but doesn't visually
+   *  clash. opacity:0 instead of display:none — the OS only opens its
+   *  keyboard for a visible, focusable element on most platforms.
+   *
+   * `kbd-bar` is the Termux-style persistent bottom bar — two rows of
+   *  modifier + special-key buttons, always visible on touch devices.
+   *  Pegged to the visual viewport's bottom-left via JS (visualViewport
+   *  API) so it stays in view AND keeps its physical-pixel size even when
+   *  the user pinch-zooms the page. ⌨ button focuses the hidden textarea
+   *  to pop the OS soft keyboard.
+   */
+  #kbd-input {
+    /* Positioned INSIDE the visual viewport so the browser doesn't
+     * scroll the layout to keep the caret visible on every input
+     * event. Pegged to bottom-left where the soft keyboard already
+     * lives — the OS keyboard covers it and the kbd-bar floats above.
+     * opacity:0 hides it visually; width/height stays at 1px so the
+     * browser still treats it as a focusable text input.
+     *
+     * Previous `top: 0; left: -1000px` put the element offscreen and
+     * triggered the browser's "scroll to bring focused input into
+     * view" on every keystroke, popping the layout to top-left. */
+    position: fixed; left: 0; bottom: 0; width: 1px; height: 1px;
+    opacity: 0; border: none; outline: none; resize: none; padding: 0;
+    margin: 0;
+    font-size: 16px;  /* >=16px stops iOS auto-zoom on focus */
+    pointer-events: none;
+    /* Belt-and-suspenders against scroll-anchoring or scroll-into-view. */
+    scroll-margin: 0;
+  }
+  #kbd-bar {
+    display: none;
+    /* Positioned at top:0 in layout space; the JS pegBarToViewport() sets
+     * a transform that moves the bar to the bottom of the *visual* viewport
+     * AND counter-scales to physical pixels. CSS-default `bottom: 0`
+     * conflicts with that transform (stacks two positioning systems).
+     * Fallback for browsers without visualViewport: the @supports rule below
+     * pins it to the bottom of the layout viewport directly. */
+    position: fixed; top: 0; left: 0;
+    background: rgba(18, 20, 28, 0.93);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
+    padding: 5px 6px calc(5px + env(safe-area-inset-bottom)) 6px;
+    z-index: 100;
+    transform-origin: top left;  /* counter-scale anchor */
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    will-change: transform;
+  }
+  /* Fallback positioning when JS hasn't run yet OR visualViewport is absent. */
+  #kbd-bar.no-peg { top: auto; bottom: 0; right: 0; }
+  .kbd-row {
+    display: flex; gap: 4px;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .kbd-row + .kbd-row { margin-top: 4px; }
+  .kbd-row::-webkit-scrollbar { display: none; }
+  .kbd-row button {
+    flex: 0 0 auto;
+    min-width: 38px; height: 34px;
+    background: linear-gradient(180deg, rgba(72, 78, 96, 0.78), rgba(54, 58, 74, 0.78));
+    border: 1px solid rgba(180, 190, 220, 0.14);
+    border-radius: 6px;
+    color: #e4e7ee;
+    font-family: ui-monospace, monospace;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+    padding: 0 10px;
+    cursor: pointer;
+    transition: background 70ms ease, transform 70ms ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .kbd-row button:active {
+    background: linear-gradient(180deg, rgba(140, 150, 220, 0.95), rgba(110, 120, 190, 0.95));
+    transform: scale(0.96);
+  }
+  .kbd-row button.sticky {
+    background: linear-gradient(180deg, rgba(140, 220, 150, 0.90), rgba(100, 190, 120, 0.90));
+    color: #0a140c; border-color: rgba(170, 240, 180, 0.5);
+  }
+  #kbd-toggle {
+    font-size: 16px;
+    background: linear-gradient(180deg, rgba(110, 130, 200, 0.88), rgba(80, 100, 180, 0.88));
+    border-color: rgba(190, 210, 250, 0.35);
+    color: #f4f6fc;
+    margin-left: auto;  /* push to right edge of row */
+  }
+  #kbd-toggle.active {
+    background: linear-gradient(180deg, rgba(180, 100, 200, 0.92), rgba(150, 80, 180, 0.92));
+  }
+  @media (pointer: coarse) {
+    #kbd-bar { display: block; }
+  }
+</style>
+</head>
+<body>
+  <!-- task #124: status + FPS pegged together to visual-viewport top-left -->
+  <div id="viewport-info">
+    <div id="status">connecting…</div>
+    <div id="fps">decoded:—  src:—</div>
+  </div>
+  <!-- launch-E (2026-05-24): connection-lost overlay. Shown when the
+       WS or PC drops after a successful first-connect. JS toggles
+       .visible + populates the countdown / message. -->
+  <div id="reconnect-overlay" aria-live="polite" role="status">
+    <div id="reconnect-card">
+      <h2 id="reconnect-title">Connection lost</h2>
+      <p id="reconnect-msg">Reconnecting in <span class="countdown" id="reconnect-countdown">…</span> seconds (attempt <span id="reconnect-attempt">1</span> of 6)</p>
+      <button id="reconnect-now-btn" type="button">Reconnect now</button>
+    </div>
+  </div>
+  <!-- task #113: visible touch cursor follows finger on mobile -->
+  <div id="touch-cursor"></div>
+  <!-- Remote cursor overlay: canvas mirrors the server-side cursor image;
+       SVG link-line shows local-vs-remote offset with latency label.
+       Both hidden by default — stay inert until cursor messages arrive. -->
+  <canvas id="remote-cursor" width="0" height="0" style="position:fixed; pointer-events:none; z-index:20; image-rendering:pixelated; display:none;"></canvas>
+  <svg id="cursor-link" style="position:fixed; inset:0; width:100%; height:100%; pointer-events:none; z-index:19; display:none;">
+    <line id="cursor-link-line" stroke="rgba(255,255,255,0.5)" stroke-width="1" stroke-dasharray="3 3"/>
+    <text id="cursor-link-label" fill="#fff" font-size="11" font-family="monospace"></text>
+  </svg>
+  <!-- task #115/116: viewport-pegged controls. Order is left→right
+       in the flex row: Log toggle first, Pan toggle rightmost (Pan
+       is the more common toggle so it stays at the corner).
+       tabindex="-1" removes both buttons from the focus order so a
+       tab keypress (which we forward to the remote as KEY_TAB) won't
+       land on the controls and steal focus from the kbdInput. -->
+  <div id="viewport-controls" class="no-peg">
+    <button id="log-toggle" type="button" tabindex="-1">Hide log</button>
+    <button id="mode-toggle" type="button" tabindex="-1">Pan</button>
+  </div>
+  <div id="stage">
+    <video id="v" autoplay playsinline muted></video>
+  </div>
+  <!-- Termux-mirror mobile keyboard (Tasks #42/#43/#47). Persistent bottom
+       bar on touch devices; ⌨ button toggles the OS soft keyboard via the
+       hidden textarea. Pegged + counter-scaled to the visualViewport so it
+       stays fixed-size at any pinch-zoom level. -->
+  <textarea id="kbd-input" autocorrect="off" autocapitalize="off" spellcheck="false" autocomplete="off"></textarea>
+  <div id="kbd-bar">
+    <!-- Row 1: exact Termux mirror -->
+    <div class="kbd-row">
+      <button data-key="Escape">ESC</button>
+      <button data-key="/">/</button>
+      <button data-key="-">−</button>
+      <button data-key="Home">HOME</button>
+      <button data-key="ArrowUp">↑</button>
+      <button data-key="End">END</button>
+      <button data-key="PageUp">PGUP</button>
+    </div>
+    <!-- Row 2: exact Termux mirror + ⌨ toggle at right -->
+    <div class="kbd-row">
+      <button data-key="Tab">TAB</button>
+      <button data-mod="ctrl">CTRL</button>
+      <button data-mod="alt">ALT</button>
+      <button data-key="ArrowLeft">←</button>
+      <button data-key="ArrowDown">↓</button>
+      <button data-key="ArrowRight">→</button>
+      <button data-key="PageDown">PGDN</button>
+      <button id="kbd-toggle" aria-label="Toggle soft keyboard" title="Toggle soft keyboard">⌨</button>
+    </div>
+  </div>
+  <pre id="log"></pre>
+
+<script>
+// Minimal waymux WebRTC viewer.
+//
+// Browser is the offerer. Flow:
+//   1. Open WS to /ws.
+//   2. If the server sends {type:"config", iceServers:[...]}, use that as
+//      the RTCPeerConnection iceServers list. If no config arrives within
+//      the timeout below (or arrives empty), fall back to an empty config
+//      (LAN-only — preserves the original loopback dev experience).
+//   3. Construct RTCPeerConnection, addTransceiver("video","recvonly"),
+//      createOffer → setLocalDescription → send {type:offer,sdp}.
+//   4. Server replies {type:answer,sdp}; ICE candidates trickle both ways.
+//
+// Once `ontrack` fires, the <video> element binds to the inbound stream.
+//
+// Input: keyboard / pointer events are translated to neko-format JSON
+// and sent over the WS as {type:"event", event:"keydown", ...}.
+const log = document.getElementById('log');
+const status = document.getElementById('status');
+const video = document.getElementById('v');
+const fpsEl = document.getElementById('fps');
+
+// task #120: FPS meter. Three numbers:
+//   * decoded  — RTCRtpReceiver.getStats().framesPerSecond — what
+//                the browser is actually presenting from the WebRTC
+//                track. Closest to "what the customer sees".
+//   * src      — bridge's WriteSample-into-track rate, pushed over
+//                the WS as {type:"stats", srcFps:N} each second.
+//   * dropped  — framesDropped delta over the same 1 s window;
+//                hides itself when zero.
+//
+// Switched 2026-05-22 from requestVideoFrameCallback to getStats
+// because rVFC counts "frame ready to paint" not "frame actually
+// painted" — on phones with battery-saver compositor pacing,
+// rVFC's number was higher than what the user perceives. Stats's
+// framesPerSecond is the WebRTC-spec-compliant render rate.
+window.__waymuxSrcFps = null;
+let __waymuxRtpReceiver = null;
+let __waymuxStatsPrevDropped = 0;
+let __waymuxStatsPrevFps = 0;
+let __waymuxStatsTimer = null;
+
+function renderFpsMeter(decoded, dropped) {
+  if (!fpsEl) return;
+  const src = window.__waymuxSrcFps;
+  const drop = dropped > 0 ? `  drop:${dropped}` : '';
+  fpsEl.textContent = `decoded:${decoded ?? '—'}  src:${src ?? '—'}${drop}`;
+  // Recolor: green when decoded ≈ source (within 80% of src),
+  // amber when noticeably behind, red when way behind.
+  if (src && src > 0 && decoded != null) {
+    const ratio = decoded / src;
+    fpsEl.style.color = ratio >= 0.8 ? '#4ade80'
+                      : ratio >= 0.5 ? '#fbbf24'
+                      : '#f87171';
+  } else {
+    fpsEl.style.color = '#4ade80';
+  }
+}
+
+function startRecvFpsCounter() {
+  if (!pc || !pc.getReceivers) {
+    fpsEl.textContent = 'decoded:?  src:' + (window.__waymuxSrcFps ?? '—');
+    return;
+  }
+  // Find the video receiver on the active PeerConnection.
+  const receivers = pc.getReceivers();
+  __waymuxRtpReceiver = receivers.find(r => r.track && r.track.kind === 'video');
+  if (!__waymuxRtpReceiver) {
+    fpsEl.textContent = 'decoded:?  src:' + (window.__waymuxSrcFps ?? '—');
+    return;
+  }
+  // Poll getStats every 1 s. WebRTC's stats are sampled at variable
+  // cadence by the browser; 1 s smoothing matches our srcFps push.
+  if (__waymuxStatsTimer) clearInterval(__waymuxStatsTimer);
+  __waymuxStatsTimer = setInterval(async () => {
+    try {
+      const report = await __waymuxRtpReceiver.getStats();
+      let fps = null;
+      let droppedDelta = 0;
+      report.forEach(s => {
+        if (s.type === 'inbound-rtp' && s.kind === 'video') {
+          if (typeof s.framesPerSecond === 'number') {
+            fps = Math.round(s.framesPerSecond);
+            __waymuxStatsPrevFps = fps;
+          }
+          if (typeof s.framesDropped === 'number') {
+            droppedDelta = Math.max(0, s.framesDropped - __waymuxStatsPrevDropped);
+            __waymuxStatsPrevDropped = s.framesDropped;
+          }
+        }
+      });
+      // fps may be null on the first sample before the browser has
+      // computed it — fall back to the previous reading.
+      renderFpsMeter(fps ?? __waymuxStatsPrevFps, droppedDelta);
+    } catch (_) { /* tear-down race; ignore */ }
+  }, 1000);
+}
+
+// How long to wait for the server's "config" message before falling back
+// to the no-ICE-config path. Anything < 500 ms risks racing the WS open;
+// anything > 2000 ms makes LAN dev startup feel sluggish.
+const CONFIG_WAIT_MS = 1000;
+
+function note(msg) {
+  const line = `[${new Date().toISOString().slice(11, 23)}] ${msg}`;
+  log.textContent += line + "\n";
+  log.scrollTop = log.scrollHeight;
+}
+
+let ws = null;
+let pc = null;
+let pcReady = false; // becomes true once the PC has been constructed
+
+function wirePC(iceServers) {
+  pc = new RTCPeerConnection({ iceServers: iceServers || [] });
+  pcReady = true;
+
+  pc.ontrack = (ev) => {
+    note(`ontrack kind=${ev.track.kind} streams=${ev.streams.length}`);
+    if (ev.streams && ev.streams[0]) {
+      video.srcObject = ev.streams[0];
+    } else {
+      const ms = new MediaStream([ev.track]);
+      video.srcObject = ms;
+    }
+    // Tier-3: shrink the receiver jitter buffer. Chromium-only (mobile Chrome
+    // yes; iOS Safari ignores it — rely on the sender playout-delay ext there).
+    // 75ms (NOT 0) — 0 thrashes the buffer on jittery cellular and stutters.
+    try {
+      if (ev.receiver && 'jitterBufferTarget' in ev.receiver) {
+        ev.receiver.jitterBufferTarget = 40; // ms — lower = less latency
+        note('jitterBufferTarget=40ms set');
+      } else {
+        note('jitterBufferTarget unsupported — sender ext only');
+      }
+    } catch (e) { note('jitterBufferTarget err ' + e); }
+    video.playsInline = true;
+    status.textContent = 'streaming';
+    // launch-E: media is flowing — mark this as a successful connect
+    // so subsequent disconnects trigger the reconnect overlay (we don't
+    // want overlay on the FIRST-ever attempt's failures). Also reset
+    // the attempt counter so a NEW disconnect later starts fresh
+    // backoff instead of giving up on the second blip.
+    everConnected = true;
+    reconnectAttempt = 0;
+    showReconnectOverlay(false);
+    // task #120: start the received-FPS counter once the video has
+    // a stream. requestVideoFrameCallback fires per painted frame —
+    // count over a sliding 1s window for the meter.
+    startRecvFpsCounter();
+    startStatsPoller();
+  };
+
+  // Tier-3 latency instrumentation: poll inbound-rtp + selected candidate pair.
+  let _statsTimer = null;
+  function startStatsPoller() {
+    if (_statsTimer) return;
+    _statsTimer = setInterval(async () => {
+      if (!pc || pc.connectionState !== 'connected') return;
+      const s = await pc.getStats();
+      let inb, pair;
+      s.forEach(r => {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') inb = r;
+        if (r.type === 'candidate-pair' && r.nominated) pair = r;
+      });
+      if (inb) {
+        const jbMs = inb.jitterBufferEmittedCount
+          ? (inb.jitterBufferDelay / inb.jitterBufferEmittedCount * 1000).toFixed(0) : '?';
+        note(`stats fps=${inb.framesPerSecond||0} jb=${jbMs}ms ` +
+             `recv=${inb.framesReceived} dec=${inb.framesDecoded} drop=${inb.framesDropped} ` +
+             `ql=${inb.qualityLimitationReason||'-'}`);
+      }
+      if (pair) {
+        note(`pair rtt=${((pair.currentRoundTripTime||0)*1000).toFixed(0)}ms ` +
+             `remote=${pair.remoteCandidateType||'?'} relay=${pair.remoteCandidateType==='relay'}`);
+      }
+    }, 1000);
+  }
+
+  pc.oniceconnectionstatechange = () => {
+    note(`ice ${pc.iceConnectionState}`);
+    // launch-E: ICE failure is a hard signal that the WebRTC link is
+    // down. WS may still be alive (e.g. NAT rebinding); trigger
+    // reconnect anyway so the customer sees the overlay instead of a
+    // frozen video pane.
+    if (pc.iceConnectionState === 'failed') {
+      triggerReconnect('ICE failed');
+    }
+  };
+  // launch-E: catches the cases iceConnectionStateChange misses (e.g.
+  // 'disconnected' transitions on Firefox where the ICE state stays
+  // 'checking' but the higher-level connection is dead).
+  pc.onconnectionstatechange = () => {
+    note(`pc ${pc.connectionState}`);
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      triggerReconnect(`pc ${pc.connectionState}`);
+    }
+  };
+
+  pc.onicecandidate = (ev) => {
+    if (!ev.candidate) return;
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'ice', candidate: ev.candidate.toJSON() }));
+  };
+
+  pc.addTransceiver('video', { direction: 'recvonly' });
+}
+
+async function sendOffer() {
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+    note('offer sent');
+  } catch (e) {
+    note(`offer error: ${e}`);
+  }
+}
+
+async function start() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  // eng-12 Phase C: pass through ?token= from the page URL into the
+  // WS handshake. The control plane's /sessions/:id/interactive route
+  // redirects here with the token already query-string-attached, so a
+  // direct visit (LAN/dev) without a token just falls back to no-auth
+  // mode (matches the bridge's empty-JWTSecret path).
+  const tokenFromUrl = new URLSearchParams(location.search).get('token');
+  const wsURL = tokenFromUrl
+    ? `${proto}://${location.host}/ws?token=${encodeURIComponent(tokenFromUrl)}`
+    : `${proto}://${location.host}/ws`;
+  note(`opening ${wsURL.replace(/token=[^&]+/, 'token=<redacted>')}`);
+  ws = new WebSocket(wsURL);
+
+  ws.onopen = () => {
+    status.textContent = 'connected';
+    note('ws open');
+    // Don't send the offer yet — wait for either the server's config
+    // message or the timeout, whichever comes first.
+    setTimeout(() => {
+      if (!pcReady) {
+        note(`no config in ${CONFIG_WAIT_MS}ms; LAN-only fallback`);
+        wirePC([]);
+        sendOffer();
+      }
+    }, CONFIG_WAIT_MS);
+  };
+
+  ws.onmessage = async (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { note(`bad msg: ${ev.data}`); return; }
+    if (msg.type === 'config') {
+      const ice = Array.isArray(msg.iceServers) ? msg.iceServers : [];
+      note(`config: ${ice.length} ICE server(s)`);
+      if (!pcReady) {
+        wirePC(ice);
+        sendOffer();
+      }
+    } else if (msg.type === 'answer') {
+      if (!pcReady) { note('answer before PC ready'); return; }
+      await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      note('answer applied');
+    } else if (msg.type === 'ice') {
+      if (!pcReady) { note('ice before PC ready'); return; }
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { note(`addIce: ${e}`); }
+    } else if (msg.type === 'stats') {
+      // task #120: per-second source FPS from the bridge. The
+      // browser-side stats timer (1 s interval) is what triggers
+      // the actual render — we just update the source number; the
+      // next tick picks it up. If the user has never had a stats
+      // tick yet (first second after connect), force a paint with
+      // the cached decoded value so src appears immediately.
+      window.__waymuxSrcFps = msg.srcFps || 0;
+      renderFpsMeter(__waymuxStatsPrevFps || null, 0);
+    } else if (msg.type === 'cursor_image') {
+      applyCursorImage(msg);
+    } else if (msg.type === 'cursor_pos') {
+      applyCursorPos(msg);
+    } else {
+      note(`recv ${msg.type}`);
+    }
+  };
+
+  ws.onerror = () => {
+    status.textContent = 'error';
+    note('ws error');
+    // launch-E: error usually precedes close; defer the reconnect
+    // trigger to onclose so we only schedule one retry per disconnect.
+  };
+  ws.onclose = (e) => {
+    status.textContent = `closed (${e.code})`;
+    note(`ws closed: ${e.code}`);
+    // launch-E: WS close after a successful connect = network blip,
+    // VM reboot, or bridge restart. Trigger reconnect overlay.
+    triggerReconnect(`ws close ${e.code}`);
+  };
+}
+
+// ── launch-E: reconnect state machine ──────────────────────────────
+//
+// Strategy: exponential-ish backoff (1, 2, 4, 8, 16, 30 = 61s budget
+// across 6 attempts). After 6 fails, give up + show a Reload button.
+// First reconnect fires AFTER the first onclose post-connect — we
+// don't try to recover from "WS never opened" because the page's
+// initial start() handles that with its native error path.
+
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+let reconnectAttempt = 0;
+let reconnectTimer = null;
+let reconnectCountdownTimer = null;
+let everConnected = false;
+
+function showReconnectOverlay(visible) {
+  const ov = document.getElementById('reconnect-overlay');
+  if (ov) ov.classList.toggle('visible', !!visible);
+}
+
+function triggerReconnect(reason) {
+  // Skip if we never connected at all (initial start failure) — the
+  // bare status="error"/"closed (N)" message in the corner is fine
+  // for the first-attempt case; the overlay is for the lost-an-active-
+  // session case.
+  if (!everConnected) return;
+  // Already scheduled? Don't double-schedule.
+  if (reconnectTimer !== null) return;
+  note(`triggerReconnect: ${reason} (attempt ${reconnectAttempt + 1})`);
+
+  if (reconnectAttempt >= RECONNECT_DELAYS_MS.length) {
+    // Gave up. Customer can hit "Reconnect now" (which re-tries from 0)
+    // or refresh the page entirely.
+    const card = document.getElementById('reconnect-card');
+    if (card) card.classList.add('gave-up');
+    document.getElementById('reconnect-title').textContent = "Couldn't reconnect";
+    document.getElementById('reconnect-msg').innerHTML =
+      "We tried 6 times over the last minute. The VM may be down or " +
+      "your network may be blocking WebRTC. Try refreshing the page, " +
+      "or destroy + relaunch your session from the portal.";
+    document.getElementById('reconnect-now-btn').textContent = 'Refresh page';
+    document.getElementById('reconnect-now-btn').onclick = () => location.reload();
+    showReconnectOverlay(true);
+    return;
+  }
+
+  const delayMs = RECONNECT_DELAYS_MS[reconnectAttempt];
+  reconnectAttempt += 1;
+  document.getElementById('reconnect-attempt').textContent = reconnectAttempt;
+  // Show overlay + animate countdown.
+  let remainingMs = delayMs;
+  document.getElementById('reconnect-countdown').textContent = Math.ceil(remainingMs / 1000);
+  showReconnectOverlay(true);
+  reconnectCountdownTimer = setInterval(() => {
+    remainingMs -= 250;
+    if (remainingMs < 0) remainingMs = 0;
+    document.getElementById('reconnect-countdown').textContent = Math.ceil(remainingMs / 1000);
+  }, 250);
+  reconnectTimer = setTimeout(() => {
+    clearInterval(reconnectCountdownTimer);
+    reconnectCountdownTimer = null;
+    reconnectTimer = null;
+    attemptReconnect();
+  }, delayMs);
+}
+
+function attemptReconnect() {
+  note('attempting reconnect');
+  // Reset the PC. The old one's iceConnectionState='failed' is
+  // unrecoverable; we need a fresh PC for a clean offer/answer cycle.
+  try { if (pc) pc.close(); } catch (_) {}
+  pc = null;
+  pcReady = false;
+  try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
+  ws = null;
+  // The video element's old stream is dead; clear so a successful
+  // reconnect's ontrack lights it up fresh.
+  if (video) try { video.srcObject = null; } catch (_) {}
+  // Re-invoke start() — it builds wsURL + opens the WS. Same code
+  // path as initial connect, so server-side dedup (single-viewer
+  // guard / FCFS) treats us identically.
+  start();
+}
+
+// Reconnect-now button: cancel the pending timer + try immediately.
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('reconnect-now-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      if (btn.textContent === 'Refresh page') return; // gave-up handler set above
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      if (reconnectCountdownTimer !== null) clearInterval(reconnectCountdownTimer);
+      reconnectTimer = null;
+      reconnectCountdownTimer = null;
+      attemptReconnect();
+    });
+  }
+});
+
+// ── input forwarding ────────────────────────────────────────────────
+// Convert browser events to neko-format JSON envelopes and ship over the WS.
+// The Go server translates them to waymux InjectOp and pipes to the
+// session via the Unix socket.
+
+let __seq = 0;
+const __seqTimes = new Map(); // seq -> performance.now()
+function sendEvent(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const seq = (++__seq) >>> 0;
+  __seqTimes.set(seq, performance.now());
+  if (__seqTimes.size > 256) { // bound the map
+    const oldest = __seqTimes.keys().next().value;
+    __seqTimes.delete(oldest);
+  }
+  ws.send(JSON.stringify({ type: 'event', seq, ...obj }));
+}
+
+function videoCoords(e) {
+  const r = video.getBoundingClientRect();
+  // Map from CSS coords inside the video element to natural source
+  // coords. Callers MUST check `pointerReady()` first — without
+  // videoWidth set, we have no honest scale factor and any send
+  // would be wrong-by-construction.
+  const vx = (e.clientX - r.left) * video.videoWidth / r.width;
+  const vy = (e.clientY - r.top) * video.videoHeight / r.height;
+  return { x: vx, y: vy };
+}
+
+// Pointer events are only meaningful once the <video> has natural
+// dimensions (resolved on the first decoded frame). Before then,
+// mapping CSS coords to source coords has no defined scale factor;
+// the prior code silently fell back to 1:1, which produced wrong
+// coordinates whenever the source aspect or size didn't match CSS
+// width.
+function pointerReady() {
+  return video.videoWidth > 0 && video.videoHeight > 0;
+}
+
+// DOM `e.code` → Linux evdev keycode (input-event-codes.h). The session's
+// inject_key takes evdev codes, not DOM keyCodes — passing the latter
+// would route `KeyA` (DOM 65) to KEY_F7 (evdev 65) and so on. Use
+// e.code (layout-independent) rather than e.key (layout-dependent).
+const CODE_TO_EVDEV = {
+  Escape: 1,
+  Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
+  Digit6: 7, Digit7: 8, Digit8: 9, Digit9: 10, Digit0: 11,
+  Minus: 12, Equal: 13, Backspace: 14, Tab: 15,
+  KeyQ: 16, KeyW: 17, KeyE: 18, KeyR: 19, KeyT: 20,
+  KeyY: 21, KeyU: 22, KeyI: 23, KeyO: 24, KeyP: 25,
+  BracketLeft: 26, BracketRight: 27, Enter: 28, ControlLeft: 29,
+  KeyA: 30, KeyS: 31, KeyD: 32, KeyF: 33, KeyG: 34,
+  KeyH: 35, KeyJ: 36, KeyK: 37, KeyL: 38,
+  Semicolon: 39, Quote: 40, Backquote: 41, ShiftLeft: 42, Backslash: 43,
+  KeyZ: 44, KeyX: 45, KeyC: 46, KeyV: 47, KeyB: 48,
+  KeyN: 49, KeyM: 50,
+  Comma: 51, Period: 52, Slash: 53, ShiftRight: 54, NumpadMultiply: 55,
+  AltLeft: 56, Space: 57, CapsLock: 58,
+  F1: 59, F2: 60, F3: 61, F4: 62, F5: 63, F6: 64, F7: 65, F8: 66, F9: 67, F10: 68,
+  NumLock: 69, ScrollLock: 70,
+  Numpad7: 71, Numpad8: 72, Numpad9: 73, NumpadSubtract: 74,
+  Numpad4: 75, Numpad5: 76, Numpad6: 77, NumpadAdd: 78,
+  Numpad1: 79, Numpad2: 80, Numpad3: 81, Numpad0: 82, NumpadDecimal: 83,
+  F11: 87, F12: 88,
+  NumpadEnter: 96, ControlRight: 97, NumpadDivide: 98,
+  PrintScreen: 99, AltRight: 100,
+  Home: 102, ArrowUp: 103, PageUp: 104,
+  ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109,
+  Insert: 110, Delete: 111,
+  MetaLeft: 125, MetaRight: 126,
+};
+function evdevFromEvent(e) {
+  const c = CODE_TO_EVDEV[e.code];
+  if (c !== undefined) return c;
+  // Fallback for keys we haven't mapped — return -1 so the bridge can
+  // log+drop instead of routing to a random keycode.
+  return -1;
+}
+// Track physically-held keys so we can release them if focus leaves while a
+// key is down. Without this, holding Shift (or Ctrl/Alt/Meta) and then losing
+// focus — clicking the address bar, switching windows/tabs — sends the keydown
+// but never the keyup, latching the modifier in the remote session (the
+// classic "everything types in CAPS" / stuck-Ctrl bug).
+const heldKeys = new Set();
+window.addEventListener('keydown', (e) => {
+  const k = evdevFromEvent(e);
+  if (k < 0) return;
+  heldKeys.add(k);
+  sendEvent({ event: 'keydown', keyCode: k });
+  e.preventDefault();
+});
+window.addEventListener('keyup', (e) => {
+  const k = evdevFromEvent(e);
+  if (k < 0) return;
+  heldKeys.delete(k);
+  sendEvent({ event: 'keyup', keyCode: k });
+  e.preventDefault();
+});
+// Release every held key when the page loses focus or is hidden, so no
+// modifier can get stranded down in the remote session.
+function releaseHeldKeys() {
+  for (const k of heldKeys) sendEvent({ event: 'keyup', keyCode: k });
+  heldKeys.clear();
+}
+window.addEventListener('blur', releaseHeldKeys);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') releaseHeldKeys();
+});
+
+// Tear down the WS + PeerConnection the instant the tab is closed/reloaded/
+// navigated away. Without this the browser's implicit close can be delayed or
+// abnormal, so the bridge keeps this viewer alive for up to ~10s (keepalive
+// timeout) — and a reload's fresh connection overlaps the dying one, so BOTH
+// pull the video stream (2x bandwidth on the link → stutter). pagehide is the
+// reliable unload event (fires on close, reload, navigation, and mobile
+// background; unlike 'unload', it works with the bfcache and on iOS).
+window.addEventListener('pagehide', () => {
+  try { if (pc) pc.close(); } catch (_) {}
+  try { if (ws && ws.readyState <= WebSocket.OPEN) ws.close(); } catch (_) {}
+});
+video.addEventListener('mousemove', (e) => {
+  if (!pointerReady()) return;
+  const { x, y } = videoCoords(e);
+  sendEvent({ event: 'mousemove', x, y });
+});
+video.addEventListener('mousedown', (e) => {
+  if (!pointerReady()) return;
+  const { x, y } = videoCoords(e);
+  sendEvent({ event: 'mousedown', x, y, button: e.button });
+  e.preventDefault();
+});
+video.addEventListener('mouseup', (e) => {
+  if (!pointerReady()) return;
+  const { x, y } = videoCoords(e);
+  sendEvent({ event: 'mouseup', x, y, button: e.button });
+  e.preventDefault();
+});
+video.addEventListener('wheel', (e) => {
+  if (!pointerReady()) return;
+  const { x, y } = videoCoords(e);
+  sendEvent({ event: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
+  e.preventDefault();
+}, { passive: false });
+// Prevent right-click context menu so it routes to the session.
+video.addEventListener('contextmenu', (e) => { e.preventDefault(); });
+
+// ── Remote cursor overlay ────────────────────────────────────────────
+// Mirrors the server-side cursor image over the <video> element and
+// draws a dashed link-line between the local pointer and the echoed
+// remote position, labelled with round-trip latency in ms.
+// Gated by __isTouch — mobile keeps the #touch-cursor ripple and never
+// shows the remote overlay. Both canvas + SVG start display:none and
+// remain inert until cursor_image / cursor_pos messages arrive.
+
+const __isTouch = window.matchMedia('(pointer: coarse)').matches;
+const remoteCursor = document.getElementById('remote-cursor');
+const rcCtx = remoteCursor.getContext('2d');
+// Fix 2: cache the three cursor-link DOM refs used every rAF frame.
+const cursorLink = document.getElementById('cursor-link');
+const cursorLinkLine = document.getElementById('cursor-link-line');
+const cursorLinkLabel = document.getElementById('cursor-link-label');
+let __cursorHot = { x: 0, y: 0 };
+let __remoteSrc = null; // { x, y, seq } in source px
+let __localPt = null;   // { cx, cy } in client px — updated capture-phase
+
+// Capture-phase tracker: runs ALONGSIDE (not instead of) the existing
+// bubbling mousemove handler. capture:true ensures we always have the
+// latest local pointer position even if the bubbling handler has
+// early-returned (e.g. pointerReady() false).
+video.addEventListener('mousemove', (e) => { __localPt = { cx: e.clientX, cy: e.clientY }; }, { capture: true });
+// Fix 1: clear __localPt when the pointer leaves the video so the
+// link-line is hidden instead of freezing at the last position.
+video.addEventListener('mouseleave', () => { __localPt = null; }, { capture: true });
+
+function applyCursorImage(msg) {
+  if (__isTouch) return; // mobile keeps #touch-cursor; no remote overlay
+  if (!msg.w || !msg.h) { remoteCursor.style.display = 'none'; return; }
+  const raw = atob(msg.rgba);
+  const bytes = new Uint8ClampedArray(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  remoteCursor.width = msg.w; remoteCursor.height = msg.h;
+  rcCtx.putImageData(new ImageData(bytes, msg.w, msg.h), 0, 0);
+  __cursorHot = { x: msg.hotspotX || 0, y: msg.hotspotY || 0 };
+  remoteCursor.style.display = 'block';
+}
+
+// Inverse of videoCoords: source px -> screen px.
+function sourceToScreen(sx, sy) {
+  const r = video.getBoundingClientRect();
+  return {
+    cx: r.left + sx * r.width / (video.videoWidth || 1),
+    cy: r.top + sy * r.height / (video.videoHeight || 1),
+  };
+}
+
+function applyCursorPos(msg) {
+  if (__isTouch) return;
+  __remoteSrc = { x: msg.x, y: msg.y, seq: (msg.seq >>> 0) };
+}
+
+function renderCursorOverlay() {
+  requestAnimationFrame(renderCursorOverlay);
+  if (__isTouch || !__remoteSrc || remoteCursor.style.display === 'none') return;
+  const s = sourceToScreen(__remoteSrc.x, __remoteSrc.y);
+  remoteCursor.style.left = (s.cx - __cursorHot.x) + 'px';
+  remoteCursor.style.top  = (s.cy - __cursorHot.y) + 'px';
+
+  // Fix 2: use module-scope cached refs (cursorLink/cursorLinkLine/cursorLinkLabel)
+  // instead of calling getElementById on every rAF frame.
+  if (__localPt) {
+    const dx = __localPt.cx - s.cx, dy = __localPt.cy - s.cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 4) {
+      cursorLinkLine.setAttribute('x1', __localPt.cx); cursorLinkLine.setAttribute('y1', __localPt.cy);
+      cursorLinkLine.setAttribute('x2', s.cx); cursorLinkLine.setAttribute('y2', s.cy);
+      const sent = __seqTimes.get(__remoteSrc.seq);
+      const dms = sent != null ? Math.round(performance.now() - sent) : null;
+      cursorLinkLabel.setAttribute('x', (s.cx + 8)); cursorLinkLabel.setAttribute('y', (s.cy - 8));
+      cursorLinkLabel.textContent = dms != null ? ('Δ ' + dms + ' ms') : '';
+      cursorLink.style.display = 'block';
+    } else {
+      cursorLink.style.display = 'none';
+    }
+  } else {
+    // Fix 1: pointer has left the video — hide the link-line so it doesn't
+    // freeze at the last position.
+    cursorLink.style.display = 'none';
+  }
+}
+requestAnimationFrame(renderCursorOverlay);
+
+// ── Mobile soft keyboard (Task #42) ─────────────────────────────────
+// Strategy: a hidden <textarea> catches `input` / `compositionend` /
+// `beforeinput`. Each newly-inserted character is translated to an
+// evdev keypress sequence (Shift held for uppercase, etc.) and sent
+// over the existing key event channel. A floating ⌨ button opens the
+// soft keyboard by focusing the textarea; a modifier strip at the top
+// lets the user send Ctrl/Alt/Shift chords + arrow keys + Esc/Tab
+// that mobile soft-keyboards normally lack.
+//
+// The character → evdev map is derived from CODE_TO_EVDEV above; this
+// inner table just records the **unshifted character** that each
+// evdev code produces on a US layout. When the user types an
+// uppercase letter or one of the shifted punctuation glyphs we set
+// the Shift modifier bit and use the matching base code.
+const CHAR_TO_EVDEV = {
+  // Letters — Shift implicit for uppercase (handled by sendChar).
+  'a': 30, 'b': 48, 'c': 46, 'd': 32, 'e': 18, 'f': 33, 'g': 34, 'h': 35,
+  'i': 23, 'j': 36, 'k': 37, 'l': 38, 'm': 50, 'n': 49, 'o': 24, 'p': 25,
+  'q': 16, 'r': 19, 's': 31, 't': 20, 'u': 22, 'v': 47, 'w': 17, 'x': 45,
+  'y': 21, 'z': 44,
+  // Digits + the unshifted punctuation.
+  '1': 2, '2': 3, '3': 4, '4': 5, '5': 6,
+  '6': 7, '7': 8, '8': 9, '9': 10, '0': 11,
+  '-': 12, '=': 13, '[': 26, ']': 27, '\\': 43,
+  ';': 39, "'": 40, '`': 41, ',': 51, '.': 52, '/': 53,
+  ' ': 57, '\n': 28, '\t': 15,
+};
+// Shifted-glyph table — these produce their evdev code WITH Shift held.
+const SHIFTED_CHAR_TO_EVDEV = {
+  '!': 2, '@': 3, '#': 4, '$': 5, '%': 6,
+  '^': 7, '&': 8, '*': 9, '(': 10, ')': 11,
+  '_': 12, '+': 13, '{': 26, '}': 27, '|': 43,
+  ':': 39, '"': 40, '~': 41, '<': 51, '>': 52, '?': 53,
+};
+
+// XKB modifier bitmask — matches mods_depressed in session/state.rs.
+const MOD = { SHIFT: 1, CTRL: 4, ALT: 8, META: 64 };
+// Physical evdev keycodes for the left modifier keys. Chrome's URL bar
+// shortcut handling and most WebGL game keydown listeners track modifier
+// state via real key events on these codes, NOT via wl_keyboard.modifiers
+// alone. Task #119: wrap each chord with synthetic modifier presses.
+const MOD_EVDEV = { ctrl: 29, alt: 56, shift: 42, meta: 125 };
+
+// Sticky modifier state from the toolbar. Each entry is "armed for the
+// next keypress" — consumed after one chord, mirroring how mobile
+// keyboards traditionally model Shift as a one-shot toggle.
+const stickyMods = { ctrl: false, alt: false, shift: false, meta: false };
+function currentMods() {
+  let m = 0;
+  if (stickyMods.ctrl) m |= MOD.CTRL;
+  if (stickyMods.alt) m |= MOD.ALT;
+  if (stickyMods.shift) m |= MOD.SHIFT;
+  if (stickyMods.meta) m |= MOD.META;
+  return m;
+}
+function clearStickyMods() {
+  stickyMods.ctrl = stickyMods.alt = stickyMods.shift = stickyMods.meta = false;
+  document.querySelectorAll('#kbd-bar button[data-mod].sticky').forEach((b) => b.classList.remove('sticky'));
+}
+
+// Send a single evdev keypress chord: press all active modifier KEYS,
+// press + release the main code, release the modifier keys. Task #119:
+// the modifiers bitmask alone is insufficient for Chrome's URL bar
+// shortcut handling (Ctrl+A) and most WebGL games that track modifier
+// state via physical keydown events. Sending KEY_LEFTCTRL/SHIFT/ALT/META
+// keydown around the chord makes the modifier "real" on the wire so
+// every client sees a consistent press-and-release sequence.
+function sendKeyChord(evdev, extraMods) {
+  if (evdev < 0) return;
+  const mods = currentMods() | (extraMods || 0);
+  const heldMods = [];
+  if (mods & MOD.CTRL)  heldMods.push(MOD_EVDEV.ctrl);
+  if (mods & MOD.ALT)   heldMods.push(MOD_EVDEV.alt);
+  if (mods & MOD.SHIFT) heldMods.push(MOD_EVDEV.shift);
+  if (mods & MOD.META)  heldMods.push(MOD_EVDEV.meta);
+  for (const m of heldMods) {
+    sendEvent({ event: 'keydown', keyCode: m, modifiers: mods });
+  }
+  sendEvent({ event: 'keydown', keyCode: evdev, modifiers: mods });
+  sendEvent({ event: 'keyup',   keyCode: evdev, modifiers: mods });
+  for (let i = heldMods.length - 1; i >= 0; i--) {
+    sendEvent({ event: 'keyup', keyCode: heldMods[i], modifiers: 0 });
+  }
+  clearStickyMods();
+}
+
+// Translate a single typed character to a key-chord. Used by the
+// textarea's `input`/`compositionend` paths; falls through silently
+// for characters we don't have an evdev mapping for (emoji, CJK, …).
+function sendChar(ch) {
+  if (CHAR_TO_EVDEV[ch] !== undefined) {
+    sendKeyChord(CHAR_TO_EVDEV[ch], 0);
+    return;
+  }
+  // Uppercase ASCII letters → Shift + base code.
+  const lc = ch.toLowerCase();
+  if (CHAR_TO_EVDEV[lc] !== undefined && lc !== ch) {
+    sendKeyChord(CHAR_TO_EVDEV[lc], MOD.SHIFT);
+    return;
+  }
+  if (SHIFTED_CHAR_TO_EVDEV[ch] !== undefined) {
+    sendKeyChord(SHIFTED_CHAR_TO_EVDEV[ch], MOD.SHIFT);
+    return;
+  }
+  note(`unmapped char ${JSON.stringify(ch)}`);
+}
+
+// Textarea wiring — char-stream path.
+const kbdInput = document.getElementById('kbd-input');
+const kbdBar = document.getElementById('kbd-bar');
+const kbdToggle = document.getElementById('kbd-toggle');
+let composing = false;
+let kbdOpen = false;
+
+// Visual-viewport pegging: keep the bar anchored to the bottom-left of the
+// VISUAL viewport (what the user actually sees after pinch-zoom) AND
+// counter-scale so the bar's physical pixel size stays constant regardless
+// of zoom. Without this, fixed-position elements scale with the page and
+// look giant when zoomed in / scroll off-screen when panning a zoomed view.
+function pegBarToViewport() {
+  if (!window.visualViewport) {
+    kbdBar.classList.add('no-peg');
+    return;
+  }
+  const vv = window.visualViewport;
+  const s = vv.scale || 1;
+  // bar.offsetHeight scales with the page; divide by scale to get physical
+  // pixels, since transform: scale(1/s) is what we apply.
+  const physH = kbdBar.offsetHeight;
+  // CSS sets `position: fixed; top:0; left:0` so default coordinate is
+  // top-left of layout viewport. translate to bottom-left of visual
+  // viewport, then counter-scale (transform-origin: top left).
+  const tx = vv.offsetLeft;
+  const ty = vv.offsetTop + vv.height - physH / s;
+  kbdBar.style.transform = `translate(${tx}px, ${ty}px) scale(${1 / s})`;
+  // Pre-scale width: the (1/s) scale shrinks the element AFTER layout, so
+  // we set layout width to vv.width*s so the rendered width matches the
+  // viewport width.
+  kbdBar.style.width = `${vv.width * s}px`;
+}
+// task #122: peg the hidden kbdInput textarea to the visual
+// viewport bottom so when the OS soft keyboard appears (shrinking
+// the visual viewport from the layout viewport), the textarea
+// stays visible JUST ABOVE the keyboard rather than being pushed
+// behind it. Without this peg, the browser's "scroll focused
+// input into view" kicks in on every keystroke, jumping the
+// layout. CSS sets `position: fixed; left: 0; bottom: 0`; we
+// translate to a real bottom-of-visual position.
+function pegKbdInputToViewport() {
+  if (!window.visualViewport) return;
+  const vv = window.visualViewport;
+  // CSS sets layout coord at left:0 bottom:0. Translate to the
+  // bottom-LEFT of the VISUAL viewport so when the user pans a
+  // zoomed view, the textarea stays inside the visible area. Without
+  // this, every keystroke triggers the browser's "scroll focused
+  // input into view" — which on a zoomed+panned view jumps the
+  // visual viewport back to the textarea's layout-x (= 0, far left).
+  const layoutX = 0;
+  const layoutY = window.innerHeight - 1;
+  const targetX = vv.offsetLeft;
+  const targetY = vv.offsetTop + vv.height - 1;
+  const dx = targetX - layoutX;
+  const dy = targetY - layoutY;
+  kbdInput.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+
+// task #124: peg the top-left info row (#status + #fps) to the
+// visual viewport so it stays screen-fixed during pinch-zoom + pan.
+// Same pattern as pegViewportControls, just anchored to the LEFT.
+function pegViewportInfo() {
+  const el = document.getElementById('viewport-info');
+  if (!el) return;
+  if (!window.visualViewport) return;
+  const vv = window.visualViewport;
+  const s = vv.scale || 1;
+  const tx = vv.offsetLeft;
+  const ty = vv.offsetTop;
+  el.style.transform = `translate(${tx}px, ${ty}px) scale(${1 / s})`;
+}
+
+// task #115/116: peg the top-right control row (Pan toggle + Log
+// toggle) to the visual viewport so the buttons stay at the user's
+// screen-top-right no matter how they pinch-zoom or pan the page.
+// Same visualViewport pattern as pegBarToViewport; transform-origin
+// is top-left on the container so counter-scaling expands rightward.
+function pegViewportControls() {
+  const el = document.getElementById('viewport-controls');
+  if (!el) return;
+  if (!window.visualViewport) {
+    el.classList.add('no-peg');
+    return;
+  }
+  el.classList.remove('no-peg');
+  const vv = window.visualViewport;
+  const s = vv.scale || 1;
+  const physW = el.offsetWidth; // layout width; transform: scale(1/s) shrinks to physical px
+  // Place at top of visual viewport, flush right (vv.right - physW/s).
+  const tx = vv.offsetLeft + vv.width - physW / s;
+  const ty = vv.offsetTop;
+  el.style.transform = `translate(${tx}px, ${ty}px) scale(${1 / s})`;
+}
+
+if (window.visualViewport) {
+  const pegAll = () => { pegBarToViewport(); pegViewportControls(); pegViewportInfo(); pegKbdInputToViewport(); };
+  window.visualViewport.addEventListener('resize', pegAll);
+  window.visualViewport.addEventListener('scroll', pegAll);
+  // Initial peg after layout settles.
+  if (document.readyState === 'complete') {
+    requestAnimationFrame(pegAll);
+  } else {
+    window.addEventListener('load', () => requestAnimationFrame(pegAll));
+  }
+  // Also peg on rotation / orientation change.
+  window.addEventListener('orientationchange', () => setTimeout(pegAll, 200));
+} else {
+  // No visualViewport API — fall back to plain CSS position: fixed bottom:0.
+  kbdBar.classList.add('no-peg');
+}
+
+kbdInput.addEventListener('compositionstart', () => { composing = true; });
+kbdInput.addEventListener('compositionend', (e) => {
+  composing = false;
+  for (const ch of (e.data || '')) sendChar(ch);
+  kbdInput.value = '';
+});
+kbdInput.addEventListener('beforeinput', (e) => {
+  // Backspace arrives as a `beforeinput` with the deletion inputType;
+  // mobile keyboards don't fire keydown for it. Translate to evdev
+  // Backspace (14) and prevent the textarea from actually mutating —
+  // we keep its value empty so successive inserts are easy to read.
+  if (e.inputType === 'deleteContentBackward') {
+    e.preventDefault();
+    sendKeyChord(14, 0);
+    kbdInput.value = '';
+  }
+});
+kbdInput.addEventListener('input', (e) => {
+  if (composing) return;
+  // Enter on mobile arrives here as a literal '\n'. Other chars too.
+  const data = e.data;
+  if (data) {
+    for (const ch of data) sendChar(ch);
+  } else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') {
+    sendKeyChord(28, 0); // Enter
+  }
+  kbdInput.value = '';
+});
+
+// ⌨ toggle: focus the hidden textarea to summon the OS soft keyboard,
+// or blur to dismiss. Visual state via .active class on the button.
+//
+// We track keyboard-open state in `kbdOpen` rather than reading
+// `document.activeElement` at toggle time — by the time the click
+// handler runs, focus has moved to the toggle button, so
+// activeElement is `kbdToggle`, not `kbdInput`. The blur-handler
+// suppression below keeps `kbdOpen` consistent across the
+// toggle-button-steals-focus path.
+//
+// preventScroll: true is load-bearing — without it the browser scrolls
+// the layout viewport to bring the (now bottom-of-viewport) textarea
+// into "view" even though it's already there, jittering the remote
+// desktop frame.
+//
+// Synthetic mousedown.preventDefault keeps focus on kbdInput when the
+// user taps a row button — otherwise the button takes focus and the OS
+// keyboard dismisses mid-typing. This is the same rationale that drives
+// the relatedTarget check on the blur handler.
+kbdToggle.addEventListener('mousedown', (e) => { e.preventDefault(); });
+kbdToggle.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (kbdOpen) {
+    kbdInput.blur();
+    kbdOpen = false;
+    kbdToggle.classList.remove('active');
+    clearStickyMods();
+  } else {
+    kbdInput.focus({ preventScroll: true });
+    kbdOpen = true;
+    kbdToggle.classList.add('active');
+  }
+});
+// If the textarea is blurred by another mechanism (e.g. user dismisses
+// keyboard via the system back button), sync our state. Skip the
+// implicit blur that fires when the user taps the ⌨ button itself —
+// that path is handled by the click handler above. Detected via
+// relatedTarget pointing at kbdToggle.
+//
+// task #126: do NOT clearStickyMods() here. Tapping a kbd-bar button
+// (Ctrl, Alt, arrow, etc.) can fire a blur on the textarea on some
+// Android browsers even with mousedown.preventDefault on the button
+// — that blur was clearing the sticky mod the user JUST tapped,
+// breaking chords like Ctrl+A. Stickys clear when a chord actually
+// fires (sendKeyChord → clearStickyMods) and when the ⌨ button is
+// tapped explicitly. Leaving them set across a transient blur is
+// safe.
+kbdInput.addEventListener('blur', (e) => {
+  if (e.relatedTarget === kbdToggle) return;
+  // Also skip when blur target is any kbd-bar button or viewport
+  // control — those are "expected" focus shifts that the user
+  // explicitly initiated; the original-focus state recovers via
+  // the existing post-tap refocus call.
+  if (e.relatedTarget && e.relatedTarget.closest &&
+      (e.relatedTarget.closest('#kbd-bar') ||
+       e.relatedTarget.closest('#viewport-controls'))) {
+    return;
+  }
+  kbdOpen = false;
+  kbdToggle.classList.remove('active');
+});
+
+// Belt-and-suspenders: when the OS soft keyboard hides, the visual viewport
+// grows back to full size. Detect that and force-clear the active state in
+// case `blur` didn't fire (some Android browsers don't fire blur reliably).
+if (window.visualViewport) {
+  let lastVvHeight = window.visualViewport.height;
+  window.visualViewport.addEventListener('resize', () => {
+    const h = window.visualViewport.height;
+    // Heuristic: viewport grew back to ≥95% of window inner height → keyboard closed.
+    if (h > lastVvHeight + 50 && h >= window.innerHeight * 0.95) {
+      kbdOpen = false;
+      kbdToggle.classList.remove('active');
+    }
+    lastVvHeight = h;
+  });
+}
+
+// Bar buttons: data-mod toggles sticky modifier; data-key sends the
+// named key (with any sticky mods, then clears them per chord convention).
+//
+// task #125: preventDefault on mousedown so tapping a bar button
+// does NOT steal focus from kbdInput. Without this, mobile users
+// tapping arrow keys / Ctrl / Alt / Esc lost the soft keyboard
+// (touchend → mousedown → focus moves to button → kbdInput blurs
+// → OS dismisses keyboard). Refocus AFTER click can't recover
+// because the OS has already started its dismiss animation. Same
+// pattern modeToggle + logToggle use.
+document.querySelectorAll('#kbd-bar button').forEach((btn) => {
+  btn.addEventListener('mousedown', (e) => { e.preventDefault(); });
+  btn.setAttribute('tabindex', '-1');
+});
+document.querySelectorAll('#kbd-bar button[data-mod]').forEach((btn) => {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const mod = btn.dataset.mod;
+    stickyMods[mod] = !stickyMods[mod];
+    btn.classList.toggle('sticky', stickyMods[mod]);
+    // Refocus the textarea so the soft keyboard doesn't dismiss when
+    // the user taps a modifier in the middle of typing.
+    if (kbdOpen) {
+      // task #123: only refocus the textarea (which re-pops the OS
+      // keyboard) when the keyboard is currently OPEN per the visual
+      // viewport. Android's down-arrow dismiss doesn't reliably fire
+      // a blur on the textarea, so kbdOpen can be stale-true after a
+      // dismiss. Without this guard, every tap on the video would
+      // re-pop the keyboard that the user just dismissed.
+      const vvOpen = !window.visualViewport
+        || window.visualViewport.height < window.innerHeight * 0.9;
+      if (vvOpen) {
+        kbdInput.focus({ preventScroll: true });
+      } else {
+        // Keyboard is dismissed (vv full height). Sync state.
+        kbdOpen = false;
+        kbdToggle.classList.remove('active');
+      }
+    }
+  });
+});
+document.querySelectorAll('#kbd-bar button[data-key]').forEach((btn) => {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const key = btn.dataset.key;
+    let code = CODE_TO_EVDEV[key];
+    if (code === undefined) {
+      // Single-char keys like '/', '-', '`', '|' — fall through to sendChar
+      // which goes via the char-stream layout-aware path.
+      if (key.length === 1) {
+        sendChar(key);
+      }
+      if (kbdOpen) {
+      // task #123: only refocus the textarea (which re-pops the OS
+      // keyboard) when the keyboard is currently OPEN per the visual
+      // viewport. Android's down-arrow dismiss doesn't reliably fire
+      // a blur on the textarea, so kbdOpen can be stale-true after a
+      // dismiss. Without this guard, every tap on the video would
+      // re-pop the keyboard that the user just dismissed.
+      const vvOpen = !window.visualViewport
+        || window.visualViewport.height < window.innerHeight * 0.9;
+      if (vvOpen) {
+        kbdInput.focus({ preventScroll: true });
+      } else {
+        // Keyboard is dismissed (vv full height). Sync state.
+        kbdOpen = false;
+        kbdToggle.classList.remove('active');
+      }
+    }
+      return;
+    }
+    sendKeyChord(code, 0);
+    if (kbdOpen) {
+      // task #123: only refocus the textarea (which re-pops the OS
+      // keyboard) when the keyboard is currently OPEN per the visual
+      // viewport. Android's down-arrow dismiss doesn't reliably fire
+      // a blur on the textarea, so kbdOpen can be stale-true after a
+      // dismiss. Without this guard, every tap on the video would
+      // re-pop the keyboard that the user just dismissed.
+      const vvOpen = !window.visualViewport
+        || window.visualViewport.height < window.innerHeight * 0.9;
+      if (vvOpen) {
+        kbdInput.focus({ preventScroll: true });
+      } else {
+        // Keyboard is dismissed (vv full height). Sync state.
+        kbdOpen = false;
+        kbdToggle.classList.remove('active');
+      }
+    }
+  });
+});
+
+// ── Touch input → trackpad mode (task #113) ─────────────────────────
+//
+// Mobile browsers don't synthesize mousemove during drag and only
+// fire a delayed click ~300 ms after a tap, at coords scrambled by
+// pinch-zoom + scroll. Result on the prior build: tapping Plasma
+// icons did nothing. This block implements **trackpad-mode** on
+// the video element so the same touch interaction supports the
+// three distinct desktop ops:
+//
+//   * HOVER  — drag one finger. Cursor on the remote follows
+//              touch position (`mousemove` only), no button held.
+//              Lets users disambiguate hover-on-icon, see tooltips,
+//              etc.
+//   * CLICK  — quick tap (touchstart → touchend < 250 ms, < 10 px
+//              movement). Emits a `mousedown` + `mouseup` pair at
+//              the touch coords.
+//   * DRAG   — long-press: hold one finger still for 350 ms, then
+//              move. After the hold timer fires, a `mousedown` is
+//              sent and the cursor ring turns green; subsequent
+//              `touchmove` events continue as motion-with-button-
+//              held; `touchend` sends `mouseup`. Standard iPad-RDP
+//              gesture — gives Plasma window-drag, file-drag, etc.
+//   * RIGHT-CLICK — two-finger tap (both fingers down then up
+//              within 250 ms, no movement). Emits `mousedown` +
+//              `mouseup` at the first finger's position with
+//              `button: 2`. Two-finger HOLD instead falls through
+//              to the browser's pinch-zoom.
+//
+// State machine:
+//   IDLE → touchstart(n=1) → MOVING
+//     MOVING + tap (quick release) → emit click → IDLE
+//     MOVING + long-press timer fires → emit mousedown → DRAGGING
+//     MOVING + 2nd finger lands → 2-finger tap candidate → IDLE
+//     MOVING + significant motion → keep MOVING (no click on release)
+//   DRAGGING → touchmove → DRAGGING
+//   DRAGGING → touchend → emit mouseup → IDLE
+//   * → touchcancel → emit mouseup (defensive) → IDLE
+//
+// Multi-finger touches that don't fit the right-click pattern
+// (i.e. with significant pinch motion) are LEFT UNHANDLED so the
+// browser's native pinch-zoom works. `touch-action: manipulation`
+// on the video CSS already suppresses the legacy double-tap-zoom.
+const touchCursor = document.getElementById('touch-cursor');
+
+// task #115: pan-mode lets the user pinch-zoom and pan the rendered
+// video using browser-native gestures instead of routing every touch
+// to the remote cursor. Default is trackpad mode (touch → cursor).
+// Tap the top-right toggle to switch. In pan mode all our touch
+// handlers early-out without preventDefault, so the browser's
+// `touch-action: manipulation` CSS hint takes over.
+// Pan is the DEFAULT mode (native pinch/zoom/pan; touch handlers early-out).
+// Trackpad (touch → remote cursor) is the opt-in "enabled" state, shown
+// highlighted/active. The button label always shows the CURRENT mode.
+let panMode = true;
+const modeToggle = document.getElementById('mode-toggle');
+// task #120 fix: preventDefault on mousedown so tapping does NOT
+// steal focus from kbdInput. Mobile browsers fire a mousedown after
+// touchend (the "compatibility mouse events") — that's the one that
+// would normally shift focus. Suppressing it here is sufficient on
+// both desktop and mobile WITHOUT killing the click event itself.
+// (Previous touchstart.preventDefault killed the synthesized click
+// on Android, so taps on mobile didn't register.) tabindex="-1" on
+// the button is the belt-and-suspenders against tab-key focus.
+modeToggle.addEventListener('mousedown', (e) => { e.preventDefault(); });
+// Reflect `panMode` in the UI: label = current mode; the blue "active"
+// highlight marks TRACKPAD (the enabled state), so it's on when NOT in pan;
+// `body.pan-mode` drives the pan-gesture CSS + touch-handler early-outs and
+// stays keyed to the ACTUAL pan state.
+function applyMode() {
+  modeToggle.textContent = panMode ? 'Pan' : 'Trackpad';
+  modeToggle.classList.toggle('active', !panMode);
+  document.body.classList.toggle('pan-mode', panMode);
+}
+modeToggle.addEventListener('click', () => {
+  panMode = !panMode;
+  applyMode();
+  if (panMode) {
+    // Switching INTO pan mode mid-drag/hover — release any held
+    // button on the remote and reset state.
+    if (typeof tpState !== 'undefined' && tpState === 'dragging') {
+      sendEvent({ event: 'mouseup', x: 0, y: 0, button: 0 });
+    }
+    if (typeof resetTouchState === 'function') resetTouchState();
+    if (typeof fadeTouchCursor === 'function') fadeTouchCursor();
+  }
+});
+// Apply the initial (pan-default) state on load so pan gestures are live
+// immediately and the label/highlight are correct before any tap.
+applyMode();
+
+// task #116: hide/show the on-screen debug log. Choice persists in
+// localStorage so the customer doesn't have to re-hide after every
+// page reload / token refresh. The log is useful for debugging
+// (ICE state, WebSocket open/close, frame stats) but clutters the
+// remote desktop view in normal use.
+const LOG_HIDDEN_KEY = 'waymux.viewer.logHidden';
+const logToggle = document.getElementById('log-toggle');
+// Same focus-preserving pattern as modeToggle. ONLY mousedown is
+// preventDefault'd — touchstart preventDefault kills the click on
+// mobile (Android Chrome).
+logToggle.addEventListener('mousedown', (e) => { e.preventDefault(); });
+function applyLogHidden(hidden) {
+  document.body.classList.toggle('log-hidden', hidden);
+  logToggle.classList.toggle('log-hidden-active', hidden);
+  logToggle.textContent = hidden ? 'Show log' : 'Hide log';
+}
+try {
+  applyLogHidden(localStorage.getItem(LOG_HIDDEN_KEY) === '1');
+} catch (_) { /* localStorage may be unavailable; default to shown */ }
+logToggle.addEventListener('click', () => {
+  const next = !document.body.classList.contains('log-hidden');
+  applyLogHidden(next);
+  try { localStorage.setItem(LOG_HIDDEN_KEY, next ? '1' : '0'); }
+  catch (_) { /* best-effort */ }
+});
+
+const LONG_PRESS_MS = 350;
+const TAP_MAX_MS = 250;
+const TAP_MAX_PX = 10;
+
+// task #125: cursor is a CLICK VISUAL — ripple on tap events,
+// solid-green for long-press drags, INVISIBLE otherwise. Ripple
+// uses CSS @keyframes; we restart by removing+reflowing+adding.
+function triggerRipple(clientX, clientY, kind) {
+  // kind: 'ripple' (left-click, cyan) | 'ripple-right' (right-click, orange)
+  touchCursor.style.left = clientX + 'px';
+  touchCursor.style.top = clientY + 'px';
+  touchCursor.classList.remove('ripple', 'ripple-right', 'dragging');
+  // Force reflow so the animation restarts even on rapid double-taps.
+  void touchCursor.offsetWidth;
+  touchCursor.classList.add(kind || 'ripple');
+}
+function showDragCursor(clientX, clientY) {
+  touchCursor.style.left = clientX + 'px';
+  touchCursor.style.top = clientY + 'px';
+  touchCursor.classList.remove('ripple', 'ripple-right');
+  touchCursor.classList.add('dragging');
+}
+function moveDragCursor(clientX, clientY) {
+  // Only meaningful while .dragging is set; called from touchmove during
+  // a long-press drag so the green cursor follows the finger.
+  touchCursor.style.left = clientX + 'px';
+  touchCursor.style.top = clientY + 'px';
+}
+function setTouchCursorDragging(on) {
+  // Legacy compat: a few call sites still toggle dragging by boolean.
+  // When turning OFF, also clear any in-flight ripple class.
+  if (on) {
+    touchCursor.classList.remove('ripple', 'ripple-right');
+    touchCursor.classList.add('dragging');
+  } else {
+    touchCursor.classList.remove('dragging');
+  }
+}
+function fadeTouchCursor() {
+  touchCursor.classList.remove('ripple', 'ripple-right', 'dragging');
+}
+function videoCoordsFromClient(cx, cy) {
+  // Round to integers so two consecutive quick-taps land at exactly
+  // the same coords. Float jitter (1234.7 vs 1234.5) makes KDE see
+  // two separate clicks instead of a double-click — e.g. a quick
+  // double-tap on a window titlebar wouldn't maximize. Integer coords
+  // also match the inject_pointer protocol's expectation on the
+  // daemon side.
+  const v = videoCoords({ clientX: cx, clientY: cy });
+  return { x: Math.round(v.x), y: Math.round(v.y) };
+}
+
+// Trackpad-mode state. Reset to defaults in resetTouchState().
+let tpState = 'idle';    // 'idle' | 'moving' | 'dragging' | 'multi'
+let tpTouchId = null;    // touch identifier we're tracking
+let tpStart = null;      // { x, y, time } at first touchstart
+let tpLastClient = null; // last {clientX, clientY} for touchend coord
+let tpLongPressTimer = null;
+let tpSecondTouchStart = null; // for 2-finger-tap (right-click) detection
+// task #125: pan-mode click-through detection. Reset on touchstart;
+// nulled when finger wanders past TAP_MAX_PX; consumed on touchend.
+let panTapStart = null;
+
+function clearLongPress() {
+  if (tpLongPressTimer !== null) {
+    clearTimeout(tpLongPressTimer);
+    tpLongPressTimer = null;
+  }
+}
+function resetTouchState() {
+  clearLongPress();
+  tpState = 'idle';
+  tpTouchId = null;
+  tpStart = null;
+  tpLastClient = null;
+  tpSecondTouchStart = null;
+  setTouchCursorDragging(false);
+}
+
+video.addEventListener('touchstart', (e) => {
+  // Keep OS soft-keyboard from dismissing when the user reaches
+  // over to interact with the remote desktop.
+  if (kbdOpen) kbdInput.focus();
+  // task #125: in pan mode, record start position so touchend can
+  // distinguish "quick tap" (click-through with ripple) from
+  // "drag/pinch" (browser handles, no indicator). No moveTouchCursor
+  // here — cursor is invisible until a click event fires.
+  if (panMode) {
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      panTapStart = { x: t.clientX, y: t.clientY, time: performance.now(), id: t.identifier };
+    } else {
+      panTapStart = null; // multi-finger = pinch, never a click-through
+    }
+    return;
+  }
+  if (!pointerReady()) return;
+
+  // Two-finger TAP candidate (potential right-click). Two cases:
+  //   a. First finger landed earlier, now in 'moving' (one of the
+  //      original paths) → second finger arms right-click candidate.
+  //   b. Both fingers landed simultaneously from idle (the natural
+  //      mobile gesture) → also arm right-click. Without this, a
+  //      simultaneous 2-finger tap drops to the 3+ finger reset path
+  //      and never fires right-click (user-reported gap 2026-05-22).
+  if (e.touches.length === 2 && (tpState === 'moving' || tpState === 'idle')) {
+    tpSecondTouchStart = { time: performance.now() };
+    // Anchor right-click coords at the first touch's clientX/Y. If
+    // both came from idle, tpLastClient is null — seed it from the
+    // first touch in the current event. task #125: no hover cursor;
+    // the ripple fires later in touchend if the gesture stays still.
+    if (!tpLastClient) {
+      tpLastClient = { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY };
+    }
+    tpState = 'multi';
+    clearLongPress();
+    return;
+  }
+  if (e.touches.length !== 1) {
+    // 3+ fingers or other multi — let the browser own it.
+    resetTouchState();
+    fadeTouchCursor();
+    return;
+  }
+
+  const t = e.touches[0];
+  tpTouchId = t.identifier;
+  tpStart = { x: t.clientX, y: t.clientY, time: performance.now() };
+  tpLastClient = { clientX: t.clientX, clientY: t.clientY };
+  tpState = 'moving';
+  const { x, y } = videoCoordsFromClient(t.clientX, t.clientY);
+  // task #125: no hover cursor; ripple fires later in touchend on a
+  // quick tap. Hover motion still flows so apps that follow the
+  // pointer (e.g. KDE menus) keep tracking.
+  sendEvent({ event: 'mousemove', x, y });
+
+  // Schedule the long-press → DRAG transition. When it fires, show
+  // the solid green cursor so the user sees "I'm holding a click."
+  clearLongPress();
+  tpLongPressTimer = setTimeout(() => {
+    if (tpState !== 'moving') return; // moved out of moving (lifted, etc.)
+    if (!tpLastClient) return;
+    tpState = 'dragging';
+    showDragCursor(tpLastClient.clientX, tpLastClient.clientY);
+    const lp = videoCoordsFromClient(tpLastClient.clientX, tpLastClient.clientY);
+    sendEvent({ event: 'mousedown', x: lp.x, y: lp.y, button: 0 });
+  }, LONG_PRESS_MS);
+
+  e.preventDefault();
+}, { passive: false });
+
+video.addEventListener('touchmove', (e) => {
+  if (panMode) {
+    // task #125: if the finger has wandered past TAP_MAX_PX while in
+    // pan mode, the gesture is a pan/scroll, not a click-through tap
+    // — cancel the click candidate. No cursor drawn during pan motion.
+    if (panTapStart && e.touches.length === 1) {
+      const t = e.touches[0];
+      const dx = t.clientX - panTapStart.x;
+      const dy = t.clientY - panTapStart.y;
+      if (dx * dx + dy * dy > TAP_MAX_PX * TAP_MAX_PX) panTapStart = null;
+    } else {
+      panTapStart = null;
+    }
+    return;
+  }
+  if (!pointerReady()) return;
+  if (tpState === 'multi') {
+    // Real pinch-zoom (or 2-finger pan) — let the browser handle.
+    // Cancel the right-click candidate.
+    tpSecondTouchStart = null;
+    return;
+  }
+  if (tpState !== 'moving' && tpState !== 'dragging') return;
+  if (e.touches.length !== 1) return;
+
+  const t = e.touches[0];
+  if (t.identifier !== tpTouchId) return;
+  const prev = tpLastClient || { clientX: t.clientX, clientY: t.clientY };
+  tpLastClient = { clientX: t.clientX, clientY: t.clientY };
+
+  // If we're in 'moving' and the finger has wandered past the tap
+  // threshold, cancel the pending tap-click — the user is hovering,
+  // not tapping. Long-press timer is unaffected (still firing in
+  // place is fine; but realistically a finger that's wandered
+  // outside TAP_MAX_PX isn't going to fire long-press in the same
+  // gesture either, so cancel it too).
+  if (tpState === 'moving' && tpStart) {
+    const dx = t.clientX - tpStart.x;
+    const dy = t.clientY - tpStart.y;
+    if (dx * dx + dy * dy > TAP_MAX_PX * TAP_MAX_PX) {
+      clearLongPress();
+    }
+  }
+
+  const { x, y } = videoCoordsFromClient(t.clientX, t.clientY);
+
+  if (tpState === 'dragging') {
+    // Long-press-drag in progress (button held) — emit mousemove so
+    // the remote drag follows. Used for moving windows, selecting
+    // text, etc. Solid green cursor follows the finger.
+    moveDragCursor(t.clientX, t.clientY);
+    sendEvent({ event: 'mousemove', x, y });
+  } else {
+    // task #118: single-finger DRAG in trackpad mode emits wheel
+    // events so list-scrolling feels native (iPad/iOS muscle memory:
+    // drag finger = page scrolls under it). mousemove FIRST so the
+    // wheel event lands on the widget under the touch, not wherever
+    // the cursor was. deltaY is NEGATED — finger DOWN scrolls page
+    // content DOWN; DOM wheel semantics: positive deltaY = scroll
+    // down = content moves up, so negative deltaY = "the user wants
+    // content to move down."
+    sendEvent({ event: 'mousemove', x, y });
+    const dy = t.clientY - prev.clientY;
+    const dx = t.clientX - prev.clientX;
+    if (dy !== 0 || dx !== 0) {
+      // Scale finger-px → wheel-units. SCALE=1 maps directly (one
+      // finger pixel = one wheel deltaY unit) which felt slower
+      // than native iOS scroll. Was 4 initially — felt too jumpy
+      // ("tiny movement = big scroll"). 1.0 is the iOS-RDP-ish
+      // baseline; raise if scrolling feels sluggish, lower if jumpy.
+      const SCALE = 1;
+      sendEvent({
+        event: 'wheel', x, y,
+        deltaX: -dx * SCALE,
+        deltaY: -dy * SCALE,
+      });
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+
+video.addEventListener('touchend', (e) => {
+  if (panMode) {
+    // task #125: if the touch was a quick tap (short + still), fire a
+    // click-through at the start position with the cyan ripple visual.
+    // Drag/pinch gestures were already cancelled in touchmove.
+    if (panTapStart && pointerReady()) {
+      const elapsed = performance.now() - panTapStart.time;
+      if (elapsed < TAP_MAX_MS) {
+        const { x, y } = videoCoordsFromClient(panTapStart.x, panTapStart.y);
+        sendEvent({ event: 'mousemove', x, y });
+        sendEvent({ event: 'mousedown', x, y, button: 0 });
+        sendEvent({ event: 'mouseup', x, y, button: 0 });
+        triggerRipple(panTapStart.x, panTapStart.y, 'ripple');
+      }
+    }
+    panTapStart = null;
+    return;
+  }
+  if (!pointerReady()) return;
+
+  // 2-finger right-click: both fingers landed in MOVING state then
+  // came up within TAP_MAX_MS, no significant motion (which would
+  // have flipped us to 'multi' via touchmove). Detect by checking
+  // if we're in 'multi' and the second touch is now in changedTouches.
+  if (tpState === 'multi' && tpSecondTouchStart) {
+    const elapsed = performance.now() - tpSecondTouchStart.time;
+    if (elapsed < TAP_MAX_MS && tpLastClient) {
+      const { x, y } = videoCoordsFromClient(tpLastClient.clientX, tpLastClient.clientY);
+      sendEvent({ event: 'mousedown', x, y, button: 2 });
+      sendEvent({ event: 'mouseup', x, y, button: 2 });
+      // task #125: orange ripple to distinguish right-click from left.
+      triggerRipple(tpLastClient.clientX, tpLastClient.clientY, 'ripple-right');
+    }
+    // Either way, reset.
+    tpSecondTouchStart = null;
+    // Stay in multi if other fingers still down; if no fingers
+    // remain, drop to idle.
+    if (e.touches.length === 0) {
+      resetTouchState();
+    } else {
+      tpState = 'moving';
+    }
+    return;
+  }
+
+  // The primary touch we tracked is ending?
+  let finished = null;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === tpTouchId) {
+      finished = e.changedTouches[i];
+      break;
+    }
+  }
+  if (!finished) return;
+
+  const elapsed = tpStart ? performance.now() - tpStart.time : 0;
+  const dx = tpStart ? finished.clientX - tpStart.x : 0;
+  const dy = tpStart ? finished.clientY - tpStart.y : 0;
+  const isQuickTap =
+    tpState === 'moving' &&
+    elapsed < TAP_MAX_MS &&
+    (dx * dx + dy * dy) <= TAP_MAX_PX * TAP_MAX_PX;
+
+  const { x, y } = videoCoordsFromClient(finished.clientX, finished.clientY);
+
+  if (isQuickTap) {
+    // Quick tap → click at the touch coords. Cyan ripple as feedback.
+    sendEvent({ event: 'mousemove', x, y });
+    sendEvent({ event: 'mousedown', x, y, button: 0 });
+    sendEvent({ event: 'mouseup', x, y, button: 0 });
+    triggerRipple(finished.clientX, finished.clientY, 'ripple');
+  } else if (tpState === 'dragging') {
+    // Long-press drag is ending; release the held button + clear the
+    // solid green drag cursor.
+    sendEvent({ event: 'mouseup', x, y, button: 0 });
+    fadeTouchCursor();
+  }
+  // else: hover lift — no click, no button release needed.
+
+  resetTouchState();
+  fadeTouchCursor();
+  e.preventDefault();
+}, { passive: false });
+
+video.addEventListener('touchcancel', () => {
+  // Defensive: if a held button is stuck, release it.
+  if (tpState === 'dragging') {
+    sendEvent({ event: 'mouseup', x: 0, y: 0, button: 0 });
+  }
+  resetTouchState();
+  fadeTouchCursor();
+});
+
+start();
+</script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="waymux_attach_v1">
+  <copyright>
+    SPDX-License-Identifier: MIT OR Apache-2.0
+
+    Copyright © 2026 waymux contributors
+
+    Mirrors SPEC.md §5. Version 1.
+  </copyright>
+
+  <description summary="embed a waymux session as a wl_surface in the outer compositor">
+    This protocol is served by a waymux session process on a dedicated
+    per-session socket (the "attach socket"). A client connecting to that
+    socket speaks Wayland protocol and sees the globals defined here
+    advertised by `wl_registry` — no other globals (`wl_compositor`, etc.)
+    are exposed on this connection.
+
+    The client hands the session its outer-compositor display fd via
+    `get_surface`; the session then uses that fd to create a `wl_surface`
+    on the outer compositor and ferry frames from its inner composition
+    into it.
+  </description>
+
+  <interface name="waymux_attach_v1" version="1">
+    <description summary="attach-side handle for a session">
+      Represents a single attach-client-to-session relationship. Creating
+      this object doesn't automatically attach; the client must call
+      `get_surface` to supply its outer display fd and receive the
+      `wl_surface` the session will drive.
+    </description>
+
+    <request name="get_surface">
+      <description summary="give the session your outer display fd, get back the surface it will drive">
+        The `outer_display_fd` argument is passed via SCM_RIGHTS (Wayland
+        handles this automatically for `fd`-typed arguments). The session
+        uses it to open a Wayland client connection to the outer
+        compositor and creates a `wl_surface` there; that same surface
+        object is returned to the client as `id`.
+
+        Calling `get_surface` more than once on the same object is a
+        protocol error.
+      </description>
+      <arg name="id" type="new_id" interface="wl_surface"
+           summary="the surface, on the outer compositor, that the session will drive"/>
+      <arg name="outer_display_fd" type="fd"
+           summary="socket fd of the outer compositor's wl_display"/>
+    </request>
+
+    <request name="detach" type="destructor">
+      <description summary="tear down the attach relationship">
+        The session releases the outer display connection, destroys the
+        outer surface, and returns to headless operation. Any further
+        requests on this object result in a protocol error.
+      </description>
+    </request>
+
+    <event name="frame">
+      <description summary="a new frame was committed to the outer surface">
+        Emitted after the session has attached-and-committed a buffer on
+        the outer surface. `serial` is monotonically increasing; it can
+        be used to pair frames with input events the attach client sent.
+        `timestamp_ns` is nanoseconds since UNIX epoch at commit time.
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="timestamp_ns" type="uint"/>
+    </event>
+
+    <event name="resized">
+      <description summary="the session changed its logical output size">
+        Sent when the session is resized. The attach client should
+        update the outer surface's viewport (via `wp_viewporter`) to
+        reflect the new content aspect ratio.
+      </description>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <event name="occluded">
+      <description summary="outer surface visibility state changed">
+        `is_occluded` is 1 when the outer surface has been unmapped or
+        minimized (session pauses frame handoff to preserve idle CPU),
+        0 when it comes back into view.
+      </description>
+      <arg name="is_occluded" type="uint"/>
+    </event>
+  </interface>
+</protocol>

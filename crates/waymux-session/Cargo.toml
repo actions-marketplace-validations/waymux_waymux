@@ -1,0 +1,67 @@
+[package]
+name = "waymux-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Per-session headless compositor process."
+publish = false  # internal binary, not a crates.io showcase lib (only protocol + mux-mkv publish)
+
+[[bin]]
+name = "waymux-session"
+path = "src/main.rs"
+
+[dependencies]
+waymux-protocol = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+rmp-serde = { workspace = true }
+wayland-server = "0.31"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["server", "client", "unstable", "staging"] }
+wayland-scanner = "0.31"
+# Pulled in to activate wayland-backend's `server_system` feature (link against
+# the system libwayland) on the transitive dep; not referenced by name, so
+# cargo-machete flags it. Load-bearing — do not remove.
+wayland-backend = { version = "0.3", features = ["server_system"] }
+libc = "0.2"
+memmap2 = "0.9"
+png = "0.17"
+xkbcommon = "0.8"
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"
+gl = "0.14"
+wayland-protocols-plasma = { version = "0.3.12", features = ["server"] }
+rayon = "1"
+
+# Vulkan zero-copy recording path. These coexist with the OpenGL+ffmpeg path;
+# the new path lives in src/vulkan_record.rs and is gated by --codec
+# h264-vulkan + WAYMUX_VULKAN_PROBE=1 for now.
+ash = "0.38"
+waymux-mux-mkv = { path = "../waymux-mux-mkv" }
+
+# GPU-accelerated lossless recording via ffmpeg's ffv1_vulkan encoder.
+# Cross-vendor: works on any GPU with Vulkan compute. Slow on iGPU, fast
+# on discrete cards. The Rust ffmpeg-next wrapper doesn't cover the
+# Vulkan hwcontext APIs we need; we drop to ffmpeg-sys-next for those.
+# ffmpeg-sys-next 8.1 does NOT bind libavutil/hwcontext_vulkan.h, so the
+# AVVulkanDeviceContext / AVVulkanFramesContext / AVVkFrame fields are
+# poked via a tiny C shim (src/ffv1_vk_shim.c, built by build.rs).
+ffmpeg-next = "8.1"
+ffmpeg-sys-next = "8.1"
+
+[build-dependencies]
+cc = "1"
+
+[package.metadata.cargo-machete]
+# ffmpeg-next: used across the recording paths (referenced as `ffmpeg::...`).
+# wayland-backend: pulled in only to activate its `server_system` feature on
+# the transitive wayland-server dep. Both are load-bearing despite looking
+# unused to cargo-machete's static scan. Do not remove.
+ignored = ["ffmpeg-next", "wayland-backend"]

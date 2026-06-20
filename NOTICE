@@ -1,0 +1,23 @@
+WayMux
+Copyright 2026 WayMux LLC
+
+This product includes software developed at WayMux LLC
+(https://github.com/waymux/waymux), licensed under the
+Apache License, Version 2.0.
+
+================================================================================
+Third-party software
+================================================================================
+
+This product includes a vendored fork of neko.
+
+  neko (https://github.com/m1k1o/neko)
+  Vendored at tag v3.1.0,
+  commit a597d44680f5b7746123df59ec543256af21af75.
+  Licensed under the Apache License, Version 2.0; see
+  crates/waymux-neko-bridge/LICENSE.neko for the full license text and
+  crates/waymux-neko-bridge/NEKO-VENDORED.md for the vendoring manifest.
+
+  Copyright (C) 2020 Nurdism <nurdism.io@gmail.com>
+  Copyright (C) 2020-2024 m1k1o & Demodesk GmbH
+  Copyright (C) 2024- m1k1o

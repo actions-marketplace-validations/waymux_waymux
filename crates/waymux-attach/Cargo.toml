@@ -1,0 +1,25 @@
+[package]
+name = "waymux-attach"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Attach client that embeds a session in the outer compositor."
+publish = false  # internal binary, not a crates.io showcase lib (only protocol + mux-mkv publish)
+
+[[bin]]
+name = "waymux-attach"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+wayland-client = "0.31"
+wayland-scanner = "0.31"
+# Pulled in to activate wayland-backend's `client_system` feature (link against
+# the system libwayland) on the transitive dep; not referenced by name, so
+# cargo-machete flags it. Load-bearing — do not remove.
+wayland-backend = { version = "0.3", features = ["client_system"] }
+
+[package.metadata.cargo-machete]
+ignored = ["wayland-backend"]

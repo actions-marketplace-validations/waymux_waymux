@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+crates/waymux-neko-bridge/waymux-neko-bridge
+recordings/
+*.mkv
