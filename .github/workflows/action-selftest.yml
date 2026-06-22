@@ -1,0 +1,42 @@
+name: action self-test
+
+# Exercises the waymux composite action end-to-end on a stock GitHub runner
+# (ubuntu-24.04, no GPU): it spawns a real GUI app in a headless Wayland session
+# via the default published image, then asserts a non-blank screenshot and a
+# recording were produced. Doubles as a copy-pasteable usage example.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - '.github/workflows/action-selftest.yml'
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    name: run the action against itself
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run a GUI app through the waymux action
+        uses: ./
+        with:
+          run: 'foot & sleep 3; echo "ran inside a headless waymux session"'
+          record: 'true'
+          # image: defaults to ghcr.io/waymux/waymux-ci:latest (public)
+
+      - name: Assert the artifacts are real
+        run: |
+          echo "== artifacts =="
+          ls -la waymux-artifacts/
+          # a non-blank screenshot is > 2KB; a blank single-colour PNG is tiny
+          if ! find waymux-artifacts -name '*.png' -size +2k | grep -q .; then
+            echo "::error::no non-trivial screenshot was produced"
+            exit 1
+          fi
+          if ! find waymux-artifacts -name '*.mkv' -size +1k | grep -q .; then
+            echo "::error::no recording was produced"
+            exit 1
+          fi
+          echo "screenshot + recording OK"

@@ -5,6 +5,11 @@
 # pipeline. Requires CI/CD runners enabled on the GitLab project (gitlab.com
 # free tier needs identity verification before shared runners are available),
 # otherwise jobs stay pending and the README pipeline badge will not go green.
+#
+# Compute budget: the heavy Rust jobs run ONLY when code changes (see
+# .code-changes), never on tags (a tag pipeline is just the image build), and
+# Pages deploys independently when site/ changes. Docs/site/CI-only pushes do
+# not spend Rust-build minutes.
 stages:
   - check
   - security
@@ -35,12 +40,37 @@ variables:
       - .cargo/git/db
       - target/
 
+# Heavy Rust jobs run only when code actually changes, never on tags (a tag
+# pipeline is just the image publish), and always on a manual web run. This is
+# what keeps docs/site/CI-only pushes from spending build minutes.
+.code-changes: &code-changes
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - changes:
+        - 'crates/**/*'
+        - 'Cargo.toml'
+        - 'rust-toolchain.toml'
+        - 'deny.toml'
+        - 'tests/**/*'
+        - 'ci/**/*'
+
+# Cheap hygiene jobs (grep / gitleaks, no compile): run on every branch and MR
+# push so leaks in docs or site are caught too, but skip tags.
+.not-on-tags: &not-on-tags
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
 # --- check stage --------------------------------------------------------------
 
 fmt:
   stage: check
   image: rust:1.94-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   script:
     - rustup component add rustfmt
     - cargo fmt --all -- --check
@@ -50,7 +80,7 @@ clippy:
   # trixie (ffmpeg 7), not bookworm: the session crate's Vulkan FFV1 shim needs
   # AVVkFrame fields added in ffmpeg 6.1+, so it will not compile on 5.1.
   image: rust:1.94-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   script:
     - rustup component add clippy
     - cargo clippy --workspace --all-targets -- -D warnings
@@ -60,7 +90,7 @@ test:
   # trixie (ffmpeg 7): the workspace test build includes the session crate's
   # Vulkan FFV1 shim, which needs AVVkFrame fields added in ffmpeg 6.1+.
   image: rust:1.94-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   variables:
     LIBGL_ALWAYS_SOFTWARE: "1"
   script:
@@ -75,7 +105,7 @@ embedded-e2e:
   # trixie, not bookworm: ffmpeg 7 (the session crate's Vulkan FFV1 shim needs
   # AVVkFrame fields added in ffmpeg 6.1+; bookworm ships 5.1).
   image: rust:1.94-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   before_script:
     - apt-get update
     # Build deps (incl. clang/libclang for the ffmpeg bindings) + the software
@@ -101,13 +131,14 @@ msrv-build:
   # trixie (ffmpeg 7): bookworm's 5.1 cannot compile the session crate's Vulkan
   # FFV1 shim. The MSRV gate is about the Rust version (1.88), not the distro.
   image: rust:1.88-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   script:
     - cargo build --workspace
 
 deny:
   stage: check
   image: rust:1.94-trixie
+  <<: *code-changes
   script:
     - cargo install cargo-deny --locked
     - cargo deny check
@@ -117,6 +148,7 @@ deny:
 publish-dryrun:
   stage: check
   image: rust:1.94-trixie
+  <<: *code-changes
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends libwayland-dev pkg-config build-essential
@@ -129,6 +161,7 @@ publish-dryrun:
 neko-bridge:
   stage: check
   image: golang:1.26-bookworm
+  <<: *code-changes
   script:
     - cd crates/waymux-neko-bridge
     - go build -o waymux-neko-bridge .
@@ -138,6 +171,7 @@ neko-bridge:
 dep-isolation:
   stage: check
   image: rust:1.94-trixie
+  <<: *code-changes
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends libwayland-dev pkg-config build-essential
@@ -149,7 +183,7 @@ dep-isolation:
 kde-app-demo:
   stage: check
   image: rust:1.94-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   before_script:
     - apt-get update
     - >
@@ -175,7 +209,7 @@ kde-app-demo:
 plasma-demo:
   stage: check
   image: rust:1.94-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   allow_failure: true
   before_script:
     - apt-get update
@@ -205,7 +239,7 @@ plasma-demo:
 benchmark:
   stage: check
   image: rust:1.94-trixie
-  <<: *rust-deps
+  <<: [*rust-deps, *code-changes]
   before_script:
     - apt-get update
     - >
@@ -233,6 +267,7 @@ benchmark:
 secret-scan:
   stage: security
   image: debian:bookworm-slim
+  <<: *not-on-tags
   variables:
     GIT_DEPTH: "0"
   before_script:
@@ -251,6 +286,7 @@ secret-scan:
 repo-hygiene:
   stage: security
   image: debian:bookworm-slim
+  <<: *not-on-tags
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends grep
@@ -275,11 +311,12 @@ repo-hygiene:
 # Build + push the two CI test images to the GitLab Container Registry (always)
 # and Docker Hub (when DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are set as CI/CD
 # variables). Uses kaniko (no privileged runner needed). Runs on a tag or a
-# manual web run. Prerequisites on the GitLab project: CI/CD runners available
-# (gitlab.com free tier needs identity verification) and the Container Registry
+# manual web run. needs: [] so the tag pipeline is just the image build, not the
+# whole check suite. Prerequisites: CI/CD runners + the Container Registry
 # enabled (Settings > General > Visibility).
 publish-images:
   stage: publish
+  needs: []
   image:
     name: gcr.io/kaniko-project/executor:debug
     entrypoint: [""]
@@ -311,10 +348,12 @@ publish-images:
 
 # --- deploy stage -------------------------------------------------------------
 
-# Publish the static site under site/ to GitLab Pages (waymux.dev). The site is
-# committed in the public repo's site/ directory; this just copies it to public/.
+# Publish the static site under site/ to GitLab Pages (waymux.dev). needs: [] so
+# it deploys immediately and independently of the check stage; runs only when
+# site/ changes (or on a manual web run), so a code-only push does not redeploy.
 pages:
   stage: deploy
+  needs: []
   image: alpine:latest
   script:
     - mkdir -p public
@@ -324,3 +363,6 @@ pages:
       - public
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - 'site/**/*'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
