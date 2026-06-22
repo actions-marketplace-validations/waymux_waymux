@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>waymux</title>
+  <meta name="description" content="Headless Wayland sessions you can spawn, screenshot, record, script, and watch live in a browser, driven by a CLI and an MCP server.">
+  <style>
+    :root {
+      --bg: #0d0f12;
+      --fg: #e6e8ec;
+      --muted: #8b94a3;
+      --accent: #5ec8d8;
+      --line: #1e232b;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    main { max-width: 40rem; }
+    h1 {
+      font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+      font-size: 2.5rem;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.75rem;
+    }
+    h1 .dot { color: var(--accent); }
+    p.tagline {
+      font-size: 1.15rem;
+      color: var(--fg);
+      margin: 0 0 1.5rem;
+    }
+    p.note { color: var(--muted); margin: 0 0 2rem; }
+    code {
+      font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+      background: #14181e;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0.15em 0.45em;
+      color: var(--accent);
+      font-size: 0.95em;
+    }
+    .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
+    a.btn {
+      display: inline-block;
+      padding: 0.55rem 1.1rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--fg);
+      text-decoration: none;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+    a.btn:hover { border-color: var(--accent); color: var(--accent); }
+    footer {
+      color: var(--muted);
+      font-size: 0.85rem;
+      border-top: 1px solid var(--line);
+      padding-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>waymux<span class="dot">.</span></h1>
+    <p class="tagline">
+      Headless Wayland sessions you can spawn, screenshot, record, script,
+      and watch live in a browser, driven by a CLI and an MCP server.
+    </p>
+    <p class="note">
+      Open core, Apache-2.0. Runs entirely on your machine: no account,
+      no telemetry, no phone-home. A proper site lands here soon.
+    </p>
+    <div class="links">
+      <a class="btn" href="https://gitlab.com/tek.cat/waymux">Source &rarr;</a>
+    </div>
+    <footer>
+      waymux 0.2.0 &middot; Apache-2.0
+    </footer>
+  </main>
+</body>
+</html>

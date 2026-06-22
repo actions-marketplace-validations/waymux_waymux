@@ -1,0 +1,13 @@
+# GitLab Pages: publish the static holding page under site/ to waymux.dev.
+# Deploys only from the default branch. No Rust build runs here.
+pages:
+  stage: deploy
+  image: alpine:latest
+  script:
+    - mkdir -p public
+    - cp -r site/. public/
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
