@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Architecture | waymux</title>
+<meta name="description" content="How waymux works: nested wayland-server compositor model, control vs data plane, process and socket model, crate layout, key data flows, headless no-GPU path, and security model.">
+<meta property="og:title" content="Architecture | waymux">
+<meta property="og:description" content="waymux architecture: one wayland-server compositor per session, a per-user daemon over a unix socket, software rendering on the CPU, and a pluggable SessionBackend trait.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://waymux.dev/architecture.html">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2300d9ff'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='20' font-weight='900' text-anchor='middle' fill='%23000'%3Ew%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="container">
+    <a class="brand" href="/"><span class="brand-mark">w</span> waymux</a>
+    <nav class="nav-links">
+      <a href="architecture.html" class="active">Architecture</a>
+      <a href="cli.html">CLI &amp; API</a>
+      <a href="guides.html">Guides</a>
+      <a href="crates.html">Crates</a>
+      <a class="ext" href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+    <div class="doc">
+
+      <aside class="toc">
+        <p class="toc-title">On this page</p>
+        <a href="#overview">Overview</a>
+        <a href="#component-diagram">Component diagram</a>
+        <a href="#control-plane">Control plane</a>
+        <a class="sub" href="#transport">Transport</a>
+        <a class="sub" href="#registry">Registry</a>
+        <a class="sub" href="#backend">SessionBackend</a>
+        <a href="#data-plane">Data plane</a>
+        <a class="sub" href="#inner-compositor">Inner compositor</a>
+        <a class="sub" href="#capture">Capture and screenshots</a>
+        <a class="sub" href="#recording">Recording</a>
+        <a class="sub" href="#viewer">WebRTC viewer</a>
+        <a class="sub" href="#attach">Attach</a>
+        <a href="#process-socket-model">Process and socket model</a>
+        <a href="#headless-no-gpu">Headless no-GPU path</a>
+        <a href="#crate-layout">Crate layout</a>
+        <a href="#key-data-flows">Key data flows</a>
+        <a href="#security">Security model</a>
+        <a href="#extension-points">Extension points</a>
+        <a href="#compositor-support">Compositor support</a>
+      </aside>
+
+      <article class="content">
+        <h1>Architecture</h1>
+        <p class="lede">
+          One <code>wayland-server</code> compositor per session, running in its own process
+          against a virtual output. Never your real display.
+        </p>
+
+        <h2 id="overview">Overview</h2>
+        <p>
+          waymux is a local-first headless Wayland session manager. A per-user daemon
+          (<code>waymuxd</code>) supervises any number of isolated Wayland sessions, each
+          backed by its own in-process compositor that renders to a virtual output. A single
+          <code>waymux</code> CLI drives the daemon over a msgpack-RPC Unix socket to create
+          sessions, spawn applications into them, inject input, capture screenshots, record
+          video, and serve a low-latency WebRTC viewer to a browser.
+        </p>
+        <p>
+          Sessions can also be attached to an outer compositor (for example niri) so the
+          virtual output appears as a normal window on the host. The canonical, fully open
+          surface is local; the same control surface is reachable remotely over HTTPS for a
+          hosted deployment, but local is the default and the only mode documented here.
+        </p>
+        <div class="note">
+          <p>
+            A waymux session is a <strong>test harness, not a security sandbox.</strong>
+            Run untrusted or third-party code in a container or VM, not in a bare session.
+            All clients in a session share the same inner Wayland display and can
+            screen-capture each other.
+          </p>
+        </div>
+
+        <h2 id="component-diagram">Component diagram</h2>
+        <pre><code>                         +-------------------------------+
+                         |          waymux CLI           |
+                         |  (23 subcommands, clap)       |
+                         +---------------+---------------+
+                                         |
+              Transport trait: LocalTransport | RemoteTransport
+                                         |
+         msgpack-RPC over Unix socket    |   HTTPS + Bearer (hosted)
+         $XDG_RUNTIME_DIR/waymux.sock    |
+                                         v
+  +----------------------------------------------------------------------+
+  |                          waymuxd (per-user daemon)                   |
+  |                                                                      |
+  |   Server (accept loop, SO_PEERCRED uid gate, Hello negotiation,      |
+  |           reader/writer tasks, dispatch router, error mapping)       |
+  |                              |                                       |
+  |                              v                                       |
+  |   Registry (core engine: session map, lifecycle, broadcast,         |
+  |             supervisors, log history, session_control RPC)          |
+  |                              |                                       |
+  |   SessionBackend trait  --&gt; LocalBackend (subprocess)               |
+  |                                                                      |
+  |   cgroup / tmpfs quota (best-effort)   usage_events (feature-gated)  |
+  +--------------------------------+-------------------------------------+
+                                   | spawn + per-session control socket
+                                   v
+  +----------------------------------------------------------------------+
+  |             waymux-session (one process per session)                 |
+  |                                                                      |
+  |   Compositor thread          Control socket (tokio, msgpack-RPC)     |
+  |   - inner Wayland server      - Info/ListWindows/Resize              |
+  |   - xdg-shell, wl-shm,        - Inject{Key,Pointer,Touch,Batch}     |
+  |     dmabuf, layer-shell       - Screenshot/ScreenshotDesktop         |
+  |   - virtual output            - Record{Start,Stop} Viewer{Start..}   |
+  |   - SurfaceData / windows     Events socket --&gt; daemon broadcast     |
+  |        |            |              |                                 |
+  |        v            v              v                                 |
+  |   Attach server   Recording    Viewer (neko-bridge child, Go)        |
+  |   (waymux_attach  encoders:     - encoder thread -&gt; Annex-B NALUs   |
+  |    _v1, fd-pass)  ffv1/nvenc/    - Unix socket -&gt; Pion WebRTC       |
+  |        |          vaapi/vulkan)  - WS signaling + data channel       |
+  |        v                              |                              |
+  |   Outer compositor (niri)        Browser viewer (video + input)      |
+  +----------------------------------------------------------------------+</code></pre>
+
+        <h2 id="control-plane">Control plane</h2>
+        <p>
+          The control plane is the daemon plus its wire protocol. It is the path
+          through which every CLI verb flows: session creation, spawning, input injection,
+          capture, recording, and viewer control.
+        </p>
+
+        <h3 id="transport">Transport</h3>
+        <p>
+          The daemon binds a per-user <code>UnixListener</code> (default
+          <code>$XDG_RUNTIME_DIR/waymux.sock</code>, chmod 0600). The CLI connects through a
+          <code>Transport</code> trait with two implementations: <code>LocalTransport</code>
+          (Unix socket, msgpack-RPC) and <code>RemoteTransport</code> (HTTPS with a Bearer
+          token). Eight of the 23 CLI verbs are transport-routable; the rest are local-only.
+        </p>
+        <p>
+          Every frame is a 4-byte big-endian length prefix followed by a msgpack payload,
+          capped at a 20 MiB <code>MAX_FRAME_SIZE</code>. The first request on a connection
+          must be <code>Hello</code>. The daemon accepts any client protocol from version 1
+          through the current version (4) and replies with its version and capabilities. A
+          non-Hello first request, protocol version 0, or a version newer than the daemon's
+          own returns <code>E_PROTO_VERSION</code>.
+        </p>
+
+        <h3 id="registry">Registry</h3>
+        <p>
+          The Registry is the core engine. It holds a
+          <code>HashMap&lt;String, SessionEntry&gt;</code> of session metadata, supervisor
+          kill channels, child-PID tracking, rolling per-session log history (1024 lines),
+          and a broadcast channel that fans events to all subscribers. Its public methods
+          (<code>create</code>, <code>destroy</code>, <code>spawn_child</code>,
+          <code>session_control</code>, <code>list_windows</code>, <code>resize</code>,
+          <code>screenshot</code>, <code>inject_*</code>, <code>record_*</code>,
+          <code>viewer_*</code>, <code>tag_window</code>, <code>wait_for_idle</code>,
+          <code>attach</code>, <code>detach</code>, <code>shutdown_all</code>) are
+          protocol-agnostic.
+        </p>
+        <p>
+          The Server's <code>dispatch()</code> is a match over <code>RequestMethod</code>
+          (26 variants) that translates each wire request into a Registry call and maps
+          typed engine errors into stable <code>ErrorCode</code> values
+          (<code>E_NOT_FOUND</code>, <code>E_ALREADY_EXISTS</code>,
+          <code>E_NOT_IMPLEMENTED</code>, <code>E_BACKPRESSURE</code>,
+          <code>E_INTERNAL</code>, and others).
+        </p>
+
+        <h3 id="backend">SessionBackend</h3>
+        <p>
+          A <code>SessionBackend</code> async trait (<code>create</code> /
+          <code>destroy</code> / <code>info</code>) abstracts the session-lifecycle path.
+          <code>LocalBackend</code> is the only shipped implementation: a thin wrapper over
+          the Registry that manages subprocess sessions. The trait is the seam a future
+          provisioning target would plug into (see <a href="#extension-points">Extension
+          points</a>).
+        </p>
+
+        <h2 id="data-plane">Data plane</h2>
+        <p>
+          Each session is a separate <code>waymux-session</code> process: a full headless
+          Wayland compositor for one virtual output. It holds the inner Wayland server, the
+          capture logic, the recording thread, the attach server, and the viewer.
+        </p>
+
+        <h3 id="inner-compositor">Inner compositor</h3>
+        <p>
+          The session advertises: <code>xdg-shell</code>, <code>wl-shm</code>,
+          <code>layer-shell</code>, <code>zwp_linux_dmabuf_v1</code> (GPU buffer import
+          with modifier negotiation), viewporter, pointer/keyboard/touch, data-device
+          (clipboard), presentation-time, pointer-constraints and relative-pointer,
+          keyboard-shortcuts-inhibit, and KDE-specific protocols.
+        </p>
+        <p>
+          The compositor is observer-only: it tracks surfaces, subsurface trees, toplevels,
+          and damage timestamps without rendering. Composition happens lazily at capture
+          time via a recursive subsurface tree walk that blits into a single ARGB8888
+          buffer. This means no GPU is required for the compositor itself.
+        </p>
+
+        <h3 id="capture">Capture and screenshots</h3>
+        <p>
+          Screenshot RPCs run on the control thread, look up the surface by window id,
+          composite the subsurface tree on the CPU, and encode PNG with the
+          <code>image</code> crate. The protocol prefers a fd-passed Dmabuf format with
+          a PNG-over-SHM fallback. A buffer-hold ref-count mechanism keeps GPU buffers
+          pinned while a capture or encode is in flight.
+        </p>
+
+        <h3 id="recording">Recording</h3>
+        <p>
+          Four backends are available. The choice of codec determines whether a GPU is needed:
+        </p>
+        <table>
+          <thead>
+            <tr><th>Codec</th><th>Backend</th><th>GPU needed</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>ffv1</code></td><td>CPU readback</td><td>No</td><td>Lossless, default for CI</td></tr>
+            <tr><td><code>h264-nvenc</code></td><td>NVENC subprocess</td><td>Yes (NVIDIA)</td><td>H.264 hardware encode</td></tr>
+            <tr><td><code>h264-vaapi</code></td><td>In-process VAAPI</td><td>Yes</td><td>H.264 hardware encode</td></tr>
+            <tr><td><code>h264-vulkan</code> / <code>hevc-vulkan</code></td><td>In-process Vulkan</td><td>Yes</td><td>Zero-copy, fastest</td></tr>
+          </tbody>
+        </table>
+        <p>
+          A <code>LatestTaskSlot</code> lets newer frames evict older ones so a slow encoder
+          never back-pressures the compositor. Dual recording (primary plus
+          <code>--secondary-codec</code>) writes two output paths from the same frame tap.
+          Output is always Matroska (<code>.mkv</code>); recording paths are validated to be
+          absolute and free of <code>..</code>.
+        </p>
+
+        <h3 id="viewer">WebRTC viewer</h3>
+        <p>
+          On <code>ViewerStart</code> the session spawns a Go <code>waymux-neko-bridge</code>
+          child and an encoder thread that produces Annex-B NALUs tuned for low latency
+          (baseline profile, no B-frames, periodic IDR at 60 fps; Vulkan emits every-frame
+          IDR). NALUs cross a private per-session Unix socket using a typed 5-byte-header
+          protocol (NALU, cursor image, cursor position, force-keyframe, inject-op,
+          set-bitrate, shutdown). The bridge wraps frames into WebRTC with Pion (ICE, DTLS,
+          RTP), signals over WebSocket, and exposes a data channel.
+        </p>
+        <p>
+          Browser input arrives as JSON, is translated to waymux <code>InjectOp</code>, and
+          is written back over the socket into the session control loop.
+          Multi-viewer is last-wins: only the primary viewer's input and GCC bandwidth
+          estimate drive the shared encoder; other viewers receive video fan-out only.
+        </p>
+
+        <h3 id="attach">Attach</h3>
+        <p>
+          A second Wayland server within the session advertises
+          <code>waymux_attach_v1</code>. An attach client passes the outer compositor's
+          display fd via <code>SCM_RIGHTS</code>; the session creates a proxy
+          <code>wl_surface</code> / <code>xdg_toplevel</code> on the outer compositor and
+          ferries the inner focused window's frames into an outer SHM buffer on each
+          commit. The ferry path validates same-format ARGB8888 at 1:1 size and falls back
+          to a placeholder otherwise.
+        </p>
+
+        <h2 id="process-socket-model">Process and socket model</h2>
+        <p>
+          Every session gets its own set of Unix sockets. The daemon spawns the session
+          process and communicates with it through these sockets throughout its lifetime.
+        </p>
+        <table>
+          <thead>
+            <tr><th>Socket</th><th>Direction</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>inner Wayland display</td><td>clients <code>-&gt;</code> session</td><td>The Wayland compositor socket Wayland clients connect to</td></tr>
+            <tr><td>control socket</td><td>daemon <code>&lt;-&gt;</code> session</td><td>Persistent msgpack-RPC for session control RPCs (screenshot, inject, record, etc.)</td></tr>
+            <tr><td>events socket</td><td>session <code>-&gt;</code> daemon</td><td>Push stream: window events, damage events, log lines, forwarded to subscribers</td></tr>
+            <tr><td>attach socket</td><td>outer client <code>-&gt;</code> session</td><td><code>waymux_attach_v1</code> protocol for embedding into an outer compositor</td></tr>
+            <tr><td>ready socket</td><td>session <code>-&gt;</code> daemon</td><td>One-shot startup handshake (5 s timeout); closed after <code>create</code> completes</td></tr>
+          </tbody>
+        </table>
+        <p>
+          <strong>Same-uid gating.</strong> Both the daemon accept loop and the per-session
+          control socket check <code>SO_PEERCRED</code> and reject any connection whose uid
+          differs from the owner. The daemon socket is chmod 0600. This is the primary local
+          trust boundary.
+        </p>
+        <p>
+          <strong>Lifecycle.</strong> <code>create</code> spawns the session subprocess,
+          waits for the ready handshake, sets up best-effort cgroup and tmpfs quota
+          handles, and starts a <code>session_supervisor</code> task that owns the
+          <code>Child</code>, drains stdout/stderr into the log ring, and emits
+          <code>SessionCreated</code>. <code>destroy</code> removes the session, SIGTERMs
+          tracked child PIDs, signals the supervisor, lazy-unmounts the tmpfs, and cleans
+          up the cgroup. The supervisor also handles natural exit, emitting
+          <code>SessionDestroyed</code>.
+        </p>
+        <p>
+          <strong>Spawning clients.</strong> <code>spawn_child</code> requires an absolute
+          <code>argv[0]</code>, clears the environment and re-adds only safe variables,
+          optionally applies an fd-limit rlimit, joins the cgroup, and tracks the PID for
+          crash detection.
+        </p>
+        <p>
+          <strong>Resource capping.</strong> <code>SessionCgroup</code> (cgroup v2) and
+          <code>SessionTmpfs</code> are best-effort: if <code>CAP_SYS_ADMIN</code> is
+          absent or a write fails, the daemon logs a warning and the session runs uncapped
+          rather than failing.
+        </p>
+
+        <h2 id="headless-no-gpu">Headless no-GPU path</h2>
+        <p>
+          The compositor does no rendering of its own. Frames are captured from CPU memory
+          (SHM or CPU-mapped Dmabuf), screenshots are encoded on the CPU, and FFV1 is a
+          CPU encoder. The whole loop runs green on a stock shared CI runner, making
+          waymux the Wayland equivalent of Xvfb.
+        </p>
+        <pre><code><span class="c"># Force Mesa software rendering (llvmpipe) and disable the DRM syncobj path
+# (no /dev/dri node = implicit sync only).</span>
+<span class="k">export</span> LIBGL_ALWAYS_SOFTWARE=1
+<span class="k">export</span> GALLIUM_DRIVER=llvmpipe
+<span class="k">export</span> WAYMUX_DISABLE_SYNCOBJ=1
+<span class="k">waymux</span> serve &amp;                        <span class="c"># or let the first command auto-spawn the daemon</span>
+
+<span class="k">waymux</span> new app --size 1280x800
+WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/waymux/app/wayland.sock" kwrite notes.txt &amp;
+<span class="k">waymux</span> wait app --timeout-ms 15000
+<span class="k">waymux</span> screenshot-desktop app -o shot.png
+<span class="k">waymux</span> record start app --codec ffv1   <span class="c"># CPU-encoded lossless</span>
+<span class="k">waymux</span> record stop app</code></pre>
+
+        <table>
+          <thead>
+            <tr><th>Capability</th><th>GPU needed?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Nested compositor + virtual output</td><td>No</td></tr>
+            <tr><td>Hosting Wayland + XWayland apps</td><td>No</td></tr>
+            <tr><td>Screenshot (PNG, from CPU memory)</td><td>No</td></tr>
+            <tr><td>FFV1 lossless recording (CPU codec)</td><td>No</td></tr>
+            <tr><td>Keyboard / pointer / touch injection</td><td>No</td></tr>
+            <tr><td>Live WebRTC viewer (default codecs)</td><td>Yes</td></tr>
+            <tr><td>Hardware video encode (NVENC/VAAPI/Vulkan)</td><td>Yes</td></tr>
+          </tbody>
+        </table>
+
+        <p>
+          The first five capabilities are everything needed for functional, layout, input,
+          and visual-regression testing. CI does not need the viewer at all: it screenshots
+          and records instead.
+        </p>
+
+        <div class="note">
+          <p>
+            For Chromium, use <code>--app=&lt;url&gt;</code> mode: the page becomes the
+            toplevel surface, which is both the most reliable thing to capture in software
+            and the cleanest target for a pixel diff. In normal (non-app) mode, web page
+            content renders in an uncaptured subsurface.
+          </p>
+        </div>
+
+        <p>
+          The repository ships a ready-made end-to-end test at
+          <code>tests/e2e/run-e2e-embedded.sh</code> that launches Chromium and a KDE app
+          as direct Wayland clients under llvmpipe, asserts the captured frames have real
+          content (a center-contrast check), injects keystrokes and verifies they changed
+          the capture, records FFV1, and counts genuinely unique frames (duplicate
+          min-fps padding is stripped with <code>mpdecimate</code> first).
+        </p>
+        <p>
+          A GPU-free Docker image at <code>tests/e2e/Dockerfile</code> runs the same
+          harness with no <code>--gpus</code> and no <code>/dev/dri</code>:
+        </p>
+        <pre><code>docker build -f tests/e2e/Dockerfile -t waymux-e2e .
+docker run --rm waymux-e2e</code></pre>
+
+        <h2 id="crate-layout">Crate layout</h2>
+        <p>
+          waymux is a single Cargo workspace plus one Go module (the web viewer bridge).
+        </p>
+        <table>
+          <thead>
+            <tr><th>Crate</th><th>Binary / lib</th><th>Responsibility</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>waymux-cli</code></td>
+              <td><code>waymux</code> binary</td>
+              <td>23 subcommands (clap), dispatched through <code>run_with_transport()</code> (8 transport-routable) and <code>run_local_only()</code>. Holds the <code>Transport</code> trait and the credentials loader.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-protocol</code></td>
+              <td>lib (published)</td>
+              <td>Wire contract: <code>RequestMethod</code> (26 variants), <code>Response</code>, <code>EventBody</code> (10 variants), <code>SessionCtlMethod</code>, supporting enums, and <code>encode_frame</code> / <code>decode_frame</code>. Serialization via rmp-serde with named fields and <code>#[serde(default)]</code> throughout.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-daemon</code></td>
+              <td><code>waymuxd</code> binary</td>
+              <td>Registry engine, <code>SessionBackend</code> trait with <code>LocalBackend</code>, Server (accept loop, per-connection handler, dispatch router, event forwarder, error mapping), cgroup/quota/usage-events modules, and <code>main</code> bootstrap.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-session</code></td>
+              <td>session subprocess</td>
+              <td>The per-session compositor. Subsystems: compositor (Wayland protocol dispatch, surface and window tracking), state (thread-safe <code>Arc&lt;State&gt;</code>), control (session RPC server), recording and its encoder backends, the attach server, and the viewer (encoder thread + bridge supervision).</td>
+            </tr>
+            <tr>
+              <td><code>waymux-attach</code></td>
+              <td><code>waymux-attach</code> binary</td>
+              <td>Attach client: connects to an outer compositor's display and to the session's attach socket to embed a session's surface as a native outer window.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-mcp</code></td>
+              <td><code>waymux-mcp</code> binary</td>
+              <td>MCP server that exposes every discrete request/response CLI verb to agents by execing the CLI through an argument vector (no shell, no injection). Streaming verbs and credential-writing <code>login</code> are intentionally excluded.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-mux-mkv</code></td>
+              <td>lib (published)</td>
+              <td>Matroska muxer used by the recording subsystem to write <code>.mkv</code> output.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-neko-bridge</code></td>
+              <td>Go binary</td>
+              <td>Slim-vendored Go WebRTC bridge (derived from neko, Apache-2.0). Handles Pion WebRTC, WebSocket signaling, Ed25519 viewer-token validation, multi-viewer fan-out, GCC bandwidth feedback, and input translation. Spawned as a child of <code>waymux-session</code>.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2 id="key-data-flows">Key data flows</h2>
+
+        <h3>Create a session</h3>
+        <ol>
+          <li>CLI <code>new</code> sends <code>Hello</code> then <code>CreateSession</code> over the local socket.</li>
+          <li>Server gates on Hello, then <code>dispatch()</code> calls <code>registry.create()</code>.</li>
+          <li>Registry spawns <code>waymux-session</code> with the socket set and waits for the ready handshake (5 s timeout).</li>
+          <li>Registry installs cgroup/tmpfs handles and the supervisor, then emits <code>SessionCreated</code>.</li>
+          <li>CLI prints <code>name (WxH)</code>.</li>
+        </ol>
+
+        <h3>Spawn a client</h3>
+        <ol>
+          <li>CLI <code>spawn</code> sends <code>Spawn {argv, env, compositor}</code>.</li>
+          <li><code>dispatch()</code> calls <code>registry.spawn_child()</code>, which validates <code>argv[0]</code>, sanitizes the environment, joins the cgroup, and starts the process with <code>WAYLAND_DISPLAY</code> pointing at the session's inner socket.</li>
+          <li>The Registry records the PID, drains its logs, and on exit emits <code>ChildExited</code> or <code>SessionCrashed</code>.</li>
+          <li>CLI prints <code>pid N</code>.</li>
+        </ol>
+
+        <h3>Screenshot</h3>
+        <ol>
+          <li>CLI <code>screenshot</code> sends <code>Screenshot {window_id, format}</code>.</li>
+          <li>The daemon forwards via <code>session_control()</code> to the session control socket.</li>
+          <li>The session composites the subsurface tree on the CPU, encodes PNG, and returns width/height plus the PNG bytes.</li>
+          <li>CLI writes the raw PNG to a file or stdout; metadata goes to stderr.</li>
+        </ol>
+
+        <h3>Record</h3>
+        <ol>
+          <li>CLI <code>record start</code> sends <code>RecordStart {path, codec, secondary_codec, mode, min_fps}</code>.</li>
+          <li>The session selects an encoder, validates the output path (absolute, no <code>..</code>), and starts a recording thread fed by the compositor frame tap.</li>
+          <li>CLI prints the primary path (and the secondary path if a secondary codec was set).</li>
+          <li><code>record stop</code> finalizes the MKV container.</li>
+        </ol>
+
+        <h3>Live view</h3>
+        <ol>
+          <li>CLI <code>viewer start</code> sends <code>ViewerStart {bind, port}</code>.</li>
+          <li>The session probes a viewer codec (NVENC, then Vulkan), spawns the neko-bridge child, and starts an encoder thread.</li>
+          <li>The browser opens the bridge URL, completes WebSocket signaling, and receives the H.264 WebRTC stream; input flows back over the data channel as <code>InjectOp</code>.</li>
+          <li>CLI prints the viewer URL.</li>
+        </ol>
+
+        <h2 id="security">Security model</h2>
+        <p>
+          waymux is designed to be safe to run locally without any network exposure or
+          privileged configuration.
+        </p>
+        <table>
+          <thead>
+            <tr><th>Property</th><th>Mechanism</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Local-first</td>
+              <td>The default path is a per-user Unix socket. No network listener is opened in the local configuration.</td>
+            </tr>
+            <tr>
+              <td>Same-uid only</td>
+              <td>Every connection (daemon socket and per-session control socket) is gated by <code>SO_PEERCRED</code>; foreign uids are rejected. The daemon socket is chmod 0600 and the credentials directory is enforced at 0700.</td>
+            </tr>
+            <tr>
+              <td>Process hardening</td>
+              <td><code>spawn_child</code> requires an absolute <code>argv[0]</code>, clears the environment and re-adds only safe variables, and can apply an fd-limit rlimit. Dmabuf imports are capped at 256 MiB.</td>
+            </tr>
+            <tr>
+              <td>Fail-closed viewer token</td>
+              <td>The WebRTC bridge verifies viewer JWTs with an Ed25519 public key only. A compromised VM can never forge a token because the private key stays on the control plane. On a non-loopback bind, a missing public key or an invalid token rejects all viewers.</td>
+            </tr>
+            <tr>
+              <td>Bridge DoS hardening</td>
+              <td>The bridge caps concurrent viewers (default 8) and in-flight handshakes per source IP (default 4), returning 503 when exceeded, with bounded per-connection send queues.</td>
+            </tr>
+            <tr>
+              <td>Recording path safety</td>
+              <td>Recording paths are validated to be absolute and free of <code>..</code> before the recording thread starts.</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="note warn">
+          <p>
+            <strong>Shared session trust model.</strong> Any client connected to a session's
+            inner <code>wayland.sock</code> can screen-capture every other window in that
+            session (the compositor advertises <code>wlr-screencopy</code> to all clients).
+            Treat all apps sharing one session as mutually trusting. Isolate untrusted apps
+            in separate sessions, containers, or VMs. Access control also depends on
+            <code>XDG_RUNTIME_DIR</code> being 0700: on systemd, <code>/run/user/&lt;uid&gt;</code>
+            is already 0700, but if you point <code>XDG_RUNTIME_DIR</code> elsewhere, keep
+            the directory mode 0700.
+          </p>
+        </div>
+
+        <p>
+          <strong>What is validated vs experimental.</strong> The local control plane,
+          session lifecycle, input injection (key/pointer/touch), screenshots, recording,
+          and the WebRTC viewer are implemented and exercised by the test suite.
+          <code>InjectSelector</code> is the one reserved protocol slot that currently
+          returns <code>E_NOT_IMPLEMENTED</code>: resolve the target with
+          <code>windows</code> / <code>wait</code> and inject with an explicit
+          <code>window_id</code> instead. Coordinate scaling for non-1x outputs is not yet
+          implemented.
+        </p>
+
+        <h2 id="extension-points">Extension points</h2>
+        <p>
+          waymux is designed for evolution. The primary extension seams are:
+        </p>
+        <ul>
+          <li>
+            <strong>SessionBackend trait.</strong> Implement <code>create</code> /
+            <code>destroy</code> / <code>info</code> to target a new provisioning substrate.
+            The local subprocess backend is the only shipped implementation, but the trait
+            was designed from the start with a remote VM backend in mind.
+          </li>
+          <li>
+            <strong>Recording and viewer encoders.</strong> The codec backends are pluggable
+            behind the recording task interface. New encoders slot in alongside
+            ffv1/nvenc/vaapi/vulkan without touching the rest of the session.
+          </li>
+          <li>
+            <strong>Protocol evolution.</strong> New <code>RequestMethod</code> /
+            <code>SessionCtlMethod</code> variants and struct fields are added with
+            <code>#[serde(default)]</code> so older peers keep parsing. The version
+            handshake accepts any client protocol from 1 through the daemon's current
+            version.
+          </li>
+          <li>
+            <strong>Event subscribers.</strong> Clients subscribe to topic-filtered events
+            (<code>sessions</code>, <code>windows</code>, <code>damage</code>,
+            <code>logs</code>, with <code>:name</code> scoping and log replay on subscribe).
+            This is the integration point for external monitoring and automation.
+          </li>
+          <li>
+            <strong>Attach protocol.</strong> <code>waymux_attach_v1</code> is the seam for
+            embedding a session's output into any outer Wayland compositor via display-fd
+            passing.
+          </li>
+        </ul>
+
+        <h2 id="compositor-support">Compositor support matrix</h2>
+        <p>
+          waymux hosts direct Wayland clients (any <code>WAYLAND_DISPLAY</code>-aware app)
+          in every session. It also supports running a nested inner compositor as a client.
+        </p>
+        <table>
+          <thead>
+            <tr><th>Inner compositor</th><th>Status</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Direct Wayland clients (Chromium, foot, Qt/GTK apps)</td>
+              <td>Validated</td>
+              <td>The primary use case. Works in software and hardware rendering.</td>
+            </tr>
+            <tr>
+              <td>KWin / KDE Plasma 6</td>
+              <td>Validated</td>
+              <td>Runs as a nested inner compositor. On AMD, <code>AMD_DEBUG=nodcc</code> or <code>RADV_DEBUG=nodcc</code> is required to avoid a DCC-tiled buffer capture stall.</td>
+            </tr>
+            <tr>
+              <td>niri (Smithay)</td>
+              <td>Validated</td>
+              <td>Hardware-rendered on AMD Renoir. Same <code>AMD_DEBUG=nodcc</code> requirement.</td>
+            </tr>
+            <tr>
+              <td>Hyprland (wlroots)</td>
+              <td>Experimental</td>
+              <td>Aquamarine binds <code>xdg_wm_base</code> v6 and <code>wl_seat</code> v9; the session currently advertises v5 / v7, so Hyprland fails to start. Unblocking is a Phase 3 item.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          More broadly, the session advertises a limited set of dmabuf formats (ARGB/XRGB8888
+          only, no multiplanar/YUV) with LINEAR plus EGL-importable tiled modifiers, and a
+          limited set of Wayland interface versions. A compositor that needs more globals or
+          higher interface versions may fall back to software or fail to start. Broader
+          validation and a published support matrix are planned for Phase 3.
+        </p>
+
+      </article>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <span>&copy; 2026 WayMux LLC &middot; Apache-2.0</span>
+    <span class="foot-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI</a>
+      <a href="guides.html">Guides</a>
+      <a href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

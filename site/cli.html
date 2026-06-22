@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CLI &amp; API | waymux</title>
+<meta name="description" content="Complete CLI and API reference for waymux: every verb, flag, JSON envelope shape, and MCP tool surface.">
+<meta property="og:title" content="CLI &amp; API reference | waymux">
+<meta property="og:description" content="Complete CLI and API reference for waymux: every verb, flag, JSON envelope shape, and MCP tool surface.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://waymux.dev/cli.html">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2300d9ff'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='20' font-weight='900' text-anchor='middle' fill='%23000'%3Ew%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="container">
+    <a class="brand" href="/"><span class="brand-mark">w</span> waymux</a>
+    <nav class="nav-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html" class="active">CLI &amp; API</a>
+      <a href="guides.html">Guides</a>
+      <a href="crates.html">Crates</a>
+      <a class="ext" href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+    <div class="doc">
+
+      <aside class="toc">
+        <p class="toc-title">On this page</p>
+        <a href="#overview">Overview</a>
+        <a href="#envelope">JSON envelope</a>
+        <a href="#global-flags">Global flags</a>
+        <a href="#sessions">Sessions</a>
+        <a class="sub" href="#new">new</a>
+        <a class="sub" href="#ls">ls</a>
+        <a class="sub" href="#info">info</a>
+        <a class="sub" href="#rm">rm</a>
+        <a class="sub" href="#resize">resize</a>
+        <a href="#windows-tags">Windows &amp; tags</a>
+        <a class="sub" href="#windows">windows</a>
+        <a class="sub" href="#tag">tag</a>
+        <a class="sub" href="#wait">wait</a>
+        <a href="#input">Input</a>
+        <a class="sub" href="#inject">inject</a>
+        <a class="sub" href="#key">key</a>
+        <a class="sub" href="#click">click</a>
+        <a href="#capture">Capture</a>
+        <a class="sub" href="#screenshot">screenshot</a>
+        <a class="sub" href="#screenshot-desktop">screenshot-desktop</a>
+        <a href="#recording">Recording</a>
+        <a class="sub" href="#record-start">record start</a>
+        <a class="sub" href="#record-stop">record stop</a>
+        <a class="sub" href="#record-status">record status</a>
+        <a href="#viewer">Viewer</a>
+        <a href="#idle-events-logs">Idle / events / logs</a>
+        <a href="#attach-detach">Attach / detach</a>
+        <a href="#daemon">Daemon</a>
+        <a href="#login">Login</a>
+        <a href="#spawn">Spawn</a>
+        <a href="#mcp">MCP server</a>
+      </aside>
+
+      <article class="content">
+        <h1>CLI &amp; API reference</h1>
+
+        <h2 id="overview">Overview</h2>
+        <p>
+          The <code>waymux</code> binary is the single control surface for both humans and
+          agents. Every session lifecycle operation, input injection, capture, recording, and
+          viewer control is a verb on this one binary. The daemon (<code>waymuxd</code>) speaks
+          the same underlying protocol; the CLI is a thin client that talks to it over a Unix
+          socket (or HTTPS with <code>--remote</code>).
+        </p>
+        <p>
+          Add <code>--json</code> to any verb to get a stable, machine-readable envelope on
+          stdout. Scripts and agents should always use <code>--json</code> rather than parsing
+          human text output, which is unversioned.
+        </p>
+        <pre><code><span class="c"># Quick taste: create a session, launch an app, screenshot it, clean up.</span>
+<span class="k">waymux</span> new demo --size 1280x720
+<span class="k">waymux</span> spawn demo -- foot
+<span class="k">waymux</span> wait demo --app-id foot
+<span class="k">waymux</span> screenshot-desktop demo -o out.png
+<span class="k">waymux</span> rm demo</code></pre>
+
+        <h2 id="envelope">JSON envelope</h2>
+        <p>
+          Every verb that accepts <code>--json</code> emits exactly one JSON object on stdout
+          when it exits (streaming verbs emit newline-delimited JSON lines instead). The
+          envelope shape is fixed:
+        </p>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Present when</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>ok</code></td><td>bool</td><td>always</td><td><code>true</code> on success, <code>false</code> on error</td></tr>
+            <tr><td><code>verb</code></td><td>string</td><td>always</td><td>The CLI verb that produced this envelope (e.g. <code>"new"</code>, <code>"record start"</code>)</td></tr>
+            <tr><td><code>data</code></td><td>object</td><td><code>ok: true</code></td><td>Verb-specific payload (see each verb below)</td></tr>
+            <tr><td><code>error</code></td><td>object</td><td><code>ok: false</code></td><td>Structured error: <code>{ "code": "E_NOT_FOUND", "message": "..." }</code></td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># Success</span>
+{ "ok": true,  "verb": "new",        "data": { "name": "demo", "size": "1920x1080" } }
+
+<span class="c"># Error</span>
+{ "ok": false, "verb": "info",       "error": { "code": "E_NOT_FOUND", "message": "session 'x' not found" } }
+
+<span class="c"># Screenshot: data.png_b64 is a standard base64-encoded PNG string</span>
+{ "ok": true,  "verb": "screenshot", "data": { "window_id": 3, "png_b64": "iVBOR..." } }
+
+<span class="c"># Streaming verbs (events, logs) emit NDJSON: one envelope per line</span>
+{ "ok": true, "verb": "events", "data": { "topic": "windows", "kind": "created", ... } }
+{ "ok": true, "verb": "events", "data": { "topic": "windows", "kind": "destroyed", ... } }</code></pre>
+
+        <div class="note">
+          <p>The exit code mirrors <code>ok</code>: exit 0 on success, non-zero on error. Both
+          the exit code and the envelope are stable. Human-readable text output (without
+          <code>--json</code>) is unversioned and may change.</p>
+        </div>
+
+        <h2 id="global-flags">Global flags</h2>
+        <p>These flags apply to every verb and are accepted before the verb name.</p>
+        <table>
+          <thead><tr><th>Flag</th><th>Env var</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--socket &lt;PATH&gt;</code></td><td><code>WAYMUX_SOCKET</code></td><td>Control socket path. Defaults to <code>$XDG_RUNTIME_DIR/waymux.sock</code></td></tr>
+            <tr><td><code>--remote</code></td><td><code>WAYMUX_REMOTE</code></td><td>Route through HTTPS to the credentialed remote endpoint instead of the local Unix-socket daemon</td></tr>
+            <tr><td><code>--base-url &lt;URL&gt;</code></td><td></td><td>Override the base URL when <code>--remote</code> is set (defaults to the value persisted by <code>login</code>)</td></tr>
+            <tr><td><code>--json</code></td><td></td><td>Emit the stable JSON envelope on stdout instead of human-readable text</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2 id="sessions">Sessions</h2>
+        <p>
+          A session is one <code>wayland-server</code> compositor process with its own virtual
+          output. Sessions are identified by name. Most session verbs work both locally (via
+          Unix socket) and remotely (via <code>--remote</code>).
+        </p>
+
+        <h3 id="new">new</h3>
+        <p>Create a session.</p>
+        <pre><code><span class="k">waymux</span> new &lt;NAME&gt; [OPTIONS]
+<span class="k">waymux</span> new demo --size 1920x1080 --scale 1 --json</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--size &lt;WxH&gt;</code></td><td><code>1920x1080</code></td><td>Virtual output dimensions in pixels</td></tr>
+            <tr><td><code>--scale &lt;N&gt;</code></td><td><code>1</code></td><td>Output scale factor (HiDPI)</td></tr>
+            <tr><td><code>--share-audio</code></td><td>off</td><td>Share host PulseAudio/PipeWire sockets so apps inside the session can play or record audio. Local-only.</td></tr>
+            <tr><td><code>--mem-cap-mb &lt;MiB&gt;</code></td><td></td><td>Aggregate memory cap via cgroup-v2</td></tr>
+            <tr><td><code>--cpu-cap-pct &lt;pct&gt;</code></td><td></td><td>Aggregate CPU cap as percent of one core (200 = two cores) via cgroup-v2</td></tr>
+            <tr><td><code>--disk-quota-mb &lt;MiB&gt;</code></td><td></td><td>Per-session tmpfs quota for the runtime dir (requires daemon CAP_SYS_ADMIN)</td></tr>
+            <tr><td><code>--fd-limit &lt;N&gt;</code></td><td></td><td>File-descriptor cap (RLIMIT_NOFILE) inherited by everything spawned inside the session</td></tr>
+            <tr><td><code>--api-key-id &lt;UUID&gt;</code></td><td><code>WAYMUX_API_KEY_ID</code></td><td>API-key UUID to attribute usage to (embedded in usage-event JSONL)</td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "new", "data": { "name": "demo", "size": "1920x1080", "scale": 1 } }</code></pre>
+
+        <h3 id="ls">ls</h3>
+        <p>List all sessions.</p>
+        <pre><code><span class="k">waymux</span> ls [--json]</code></pre>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "ls", "data": { "sessions": [ { "name": "demo", "size": "1920x1080" } ] } }</code></pre>
+
+        <h3 id="info">info</h3>
+        <p>Show details for a single session.</p>
+        <pre><code><span class="k">waymux</span> info &lt;NAME&gt; [--json]</code></pre>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "info", "data": { "name": "demo", "size": "1920x1080", "scale": 1, ... } }</code></pre>
+
+        <h3 id="rm">rm</h3>
+        <p>Destroy a session and all resources associated with it.</p>
+        <pre><code><span class="k">waymux</span> rm &lt;NAME&gt; [--json]</code></pre>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "rm", "data": { "name": "demo" } }</code></pre>
+
+        <h3 id="resize">resize</h3>
+        <p>
+          Resize a session's virtual output. Local-only. The compositor propagates a
+          <code>wl_output</code> mode-change event and sends a toplevel configure to all
+          surfaces.
+        </p>
+        <pre><code><span class="k">waymux</span> resize &lt;NAME&gt; &lt;WxH&gt; [--json]
+<span class="k">waymux</span> resize demo 1280x720</code></pre>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "resize", "data": { "name": "demo", "size": "1280x720" } }</code></pre>
+
+        <hr>
+
+        <h2 id="windows-tags">Windows &amp; tags</h2>
+        <p>
+          A window is a toplevel Wayland surface inside a session. Windows are identified by
+          integer id (stable for the lifetime of the surface). Tags are free-form string labels
+          you apply to a window so you can select on them later.
+        </p>
+
+        <h3 id="windows">windows</h3>
+        <p>List windows in a session, optionally filtered by tag.</p>
+        <pre><code><span class="k">waymux</span> windows &lt;NAME&gt; [--tag &lt;TAG&gt;] [--json]
+<span class="k">waymux</span> windows demo --tag browser</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--tag &lt;TAG&gt;</code></td><td>Only return windows whose tag set contains this tag (client-side filter)</td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "windows", "data": { "windows": [
+    { "id": 3, "app_id": "foot", "title": "foot", "tags": ["term"], "pid": 12345 }
+] } }</code></pre>
+
+        <h3 id="tag">tag</h3>
+        <p>
+          Replace the tag set of a window with one or more free-form labels. At least one tag
+          is required. The previous tag set is discarded.
+        </p>
+        <pre><code><span class="k">waymux</span> tag &lt;NAME&gt; &lt;WINDOW_ID&gt; &lt;TAG&gt;... [--json]
+<span class="k">waymux</span> tag demo 3 browser main</code></pre>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "tag", "data": { "window_id": 3, "tags": ["browser","main"] } }</code></pre>
+
+        <h3 id="wait">wait</h3>
+        <p>
+          Block until a window matching a selector appears in the session, or until the timeout
+          expires. Local-only (uses the events stream internally).
+        </p>
+        <pre><code><span class="k">waymux</span> wait &lt;NAME&gt; [SELECTOR...] [--timeout-ms N] [--json]
+<span class="k">waymux</span> wait demo --app-id chromium --timeout-ms 10000</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--app-id &lt;ID&gt;</code></td><td></td><td>Match windows with this Wayland app-id</td></tr>
+            <tr><td><code>--title &lt;TITLE&gt;</code></td><td></td><td>Match windows with this exact title</td></tr>
+            <tr><td><code>--tag &lt;TAG&gt;</code></td><td></td><td>Match windows whose tag set contains this tag</td></tr>
+            <tr><td><code>--pid &lt;PID&gt;</code></td><td></td><td>Match windows owned by this pid</td></tr>
+            <tr><td><code>--nth &lt;N&gt;</code></td><td></td><td>Select the nth (0-based) matching window</td></tr>
+            <tr><td><code>--timeout-ms &lt;N&gt;</code></td><td><code>5000</code></td><td>Maximum wait in milliseconds before error exit</td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># --json output on success</span>
+{ "ok": true, "verb": "wait", "data": { "window_id": 5, "app_id": "chromium", "title": "New Tab" } }</code></pre>
+
+        <hr>
+
+        <h2 id="input">Input</h2>
+        <p>
+          waymux supports three input verbs. <code>inject</code> is the general-purpose verb
+          and works both locally and remotely. <code>key</code> and <code>click</code> are
+          convenience wrappers that are local-only.
+        </p>
+
+        <h3 id="inject">inject</h3>
+        <p>
+          Inject one or more input operations as a JSON array. The array is passed on the
+          command line as a string; no shell interpretation occurs. This is the only input verb
+          available over <code>--remote</code>.
+        </p>
+        <pre><code><span class="k">waymux</span> inject &lt;NAME&gt; --ops '&lt;JSON-ARRAY&gt;' [--json]
+
+<span class="c"># Press and release the 'a' key (keycode 30)</span>
+<span class="k">waymux</span> inject demo --ops '[{"type":"key","keycode":30},{"type":"key","keycode":30,"release":true}]'
+
+<span class="c"># Move pointer to (100, 200) and left-click (button 272)</span>
+<span class="k">waymux</span> inject demo --ops '[{"type":"pointer_motion","x":100,"y":200},{"type":"button","button":272}]'</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--ops &lt;JSON&gt;</code> (required)</td><td>JSON array of inject ops. Each op has a <code>"type"</code> field; see the protocol crate for the full <code>InjectOp</code> schema.</td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "inject", "data": {} }</code></pre>
+
+        <h3 id="key">key</h3>
+        <p>
+          Send a synthetic key event. Local-only convenience wrapper around <code>inject</code>.
+          For remote use, send a <code>key</code> op via <code>inject --ops</code>.
+        </p>
+        <pre><code><span class="k">waymux</span> key &lt;NAME&gt; &lt;KEYCODE&gt; [--release] [--modifiers N] [--json]
+<span class="k">waymux</span> key demo 30                  <span class="c"># press 'a' (keycode 30)</span>
+<span class="k">waymux</span> key demo 30 --release        <span class="c"># release 'a'</span></code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--release</code></td><td>off</td><td>Send a key release instead of a press</td></tr>
+            <tr><td><code>--modifiers &lt;N&gt;</code></td><td><code>0</code></td><td>Modifier bitmask (e.g. Shift=1, Ctrl=4)</td></tr>
+          </tbody>
+        </table>
+
+        <h3 id="click">click</h3>
+        <p>
+          Move the pointer and optionally press a button. Local-only convenience wrapper. For
+          remote use, send <code>pointer_motion</code> and <code>button</code> ops via
+          <code>inject --ops</code>.
+        </p>
+        <pre><code><span class="k">waymux</span> click &lt;NAME&gt; &lt;X&gt; &lt;Y&gt; [--button N] [--json]
+<span class="k">waymux</span> click demo 640 400            <span class="c"># move pointer, no click</span>
+<span class="k">waymux</span> click demo 640 400 --button 272  <span class="c"># move and left-click</span></code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--button &lt;N&gt;</code></td><td><code>0</code></td><td>Linux input button code. 0 moves without clicking. 272 = left, 273 = right, 274 = middle.</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2 id="capture">Capture</h2>
+
+        <h3 id="screenshot">screenshot</h3>
+        <p>Capture a single window's current buffer as a PNG.</p>
+        <pre><code><span class="k">waymux</span> screenshot &lt;NAME&gt; &lt;WINDOW_ID&gt; [-o &lt;PATH&gt;] [--json]
+<span class="k">waymux</span> screenshot demo 3 -o win3.png
+<span class="k">waymux</span> screenshot demo 3 --json      <span class="c"># PNG in data.png_b64, no file written</span></code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>-o / --output &lt;PATH&gt;</code></td><td>Output PNG path, or <code>-</code> for stdout. Required without <code>--json</code>. Optional under <code>--json</code> (PNG is returned as <code>data.png_b64</code>; if provided the file is also written).</td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "screenshot", "data": { "window_id": 3, "png_b64": "iVBOR..." } }</code></pre>
+
+        <h3 id="screenshot-desktop">screenshot-desktop</h3>
+        <p>Composite every window in the session into a single full-desktop PNG.</p>
+        <pre><code><span class="k">waymux</span> screenshot-desktop &lt;NAME&gt; [-o &lt;PATH&gt;] [--json]
+<span class="k">waymux</span> screenshot-desktop demo -o desktop.png
+<span class="k">waymux</span> screenshot-desktop demo --json   <span class="c"># PNG in data.png_b64</span></code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>-o / --output &lt;PATH&gt;</code></td><td>Output PNG path, or <code>-</code> for stdout. Required without <code>--json</code>. Optional under <code>--json</code>.</td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "screenshot-desktop", "data": { "png_b64": "iVBOR..." } }</code></pre>
+
+        <hr>
+
+        <h2 id="recording">Recording</h2>
+        <p>
+          Record a session's composited output to a lossless MKV file. Recording is
+          local-only. The <code>record</code> group has three subcommands:
+          <code>start</code>, <code>stop</code>, and <code>status</code>.
+        </p>
+
+        <h3 id="record-start">record start</h3>
+        <p>
+          Start recording to an MKV file. Two capture paths are used automatically based on
+          the client's buffer type: a fast dmabuf zero-copy path for GPU-rendered clients, and
+          a software composite fallback for SHM-only or multi-surface scenes.
+        </p>
+        <pre><code><span class="k">waymux</span> record start &lt;NAME&gt; [OUTPUT] [OPTIONS]
+<span class="k">waymux</span> record start demo
+<span class="k">waymux</span> record start demo /tmp/demo.mkv --codec ffv1 --mode whole-desktop</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>OUTPUT</code></td><td>auto</td><td>Output MKV path inside <code>~/.local/share/waymux/recordings/</code>. Defaults to an auto-named <code>&lt;session&gt;-&lt;ts&gt;.mkv</code>.</td></tr>
+            <tr><td><code>--codec &lt;CODEC&gt;</code></td><td><code>ffv1</code></td><td>Video encoder (see table below)</td></tr>
+            <tr><td><code>--secondary-codec &lt;CODEC&gt;</code></td><td></td><td>Optional second encoder running in parallel from the same frame source, writing <code>&lt;output&gt;.secondary.mkv</code></td></tr>
+            <tr><td><code>--mode &lt;MODE&gt;</code></td><td><code>focused-window</code></td><td><code>focused-window</code>: capture only the focused window's surface tree (one memcpy per commit). <code>whole-desktop</code>: composite all surfaces together (multi-window flows or Plasma desktop recordings).</td></tr>
+            <tr><td><code>--min-fps &lt;N&gt;</code></td><td></td><td>Minimum fps pacing. Without this flag recording is commit-driven (idle = 0 fps). With e.g. <code>--min-fps 60</code>, the last frame is re-encoded at 60 Hz when no new commit arrives.</td></tr>
+          </tbody>
+        </table>
+
+        <p><strong>Available codecs:</strong></p>
+        <table>
+          <thead><tr><th>Codec</th><th>Lossless</th><th>Requires</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>ffv1</code></td><td>yes</td><td>CPU / llvmpipe</td><td>Default. ~70 MB/min at 1080p. Preferred for CI visual-regression artifacts.</td></tr>
+            <tr><td><code>h264-nvenc</code></td><td>no</td><td>NVIDIA GPU</td><td>~5 MB/min. Preferred for marketing screencasts.</td></tr>
+            <tr><td><code>h264-vaapi</code></td><td>no</td><td>AMD/Intel GPU + libva</td><td>~5 MB/min.</td></tr>
+            <tr><td><code>h264-vulkan</code></td><td>no</td><td>Vulkan video encode (NVIDIA 535+, AMD Mesa 25+, Intel Mesa 24.3+)</td><td>Zero ffmpeg subprocess, zero-copy on capable hardware.</td></tr>
+            <tr><td><code>ffv1-vulkan</code></td><td>yes</td><td>Vulkan compute (ffmpeg <code>ffv1_vulkan</code>)</td><td>GPU zero-copy lossless. Slow on integrated GPUs; expected real-time at 4K 60 fps on discrete cards.</td></tr>
+            <tr><td><code>h264-vulkan-lossless</code></td><td>yes</td><td>Vulkan video encode, Hi444PP profile</td><td>Broken on NVIDIA drivers 560+580. Use <code>hevc-vulkan-lossless</code> instead for NVIDIA lossless.</td></tr>
+            <tr><td><code>hevc-vulkan-lossless</code></td><td>yes</td><td>ffmpeg 8.0 + Vulkan video encode</td><td>H.265 4:4:4 lossless. Validated on NVIDIA RTX A6000 at 1080p 60 fps.</td></tr>
+          </tbody>
+        </table>
+
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "record start", "data": { "name": "demo", "output": "/home/user/.local/share/waymux/recordings/demo-20260101.mkv" } }</code></pre>
+
+        <h3 id="record-stop">record stop</h3>
+        <p>Stop a session's active recording and flush the MKV to disk.</p>
+        <pre><code><span class="k">waymux</span> record stop &lt;NAME&gt; [--json]</code></pre>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "record stop", "data": { "name": "demo" } }</code></pre>
+
+        <h3 id="record-status">record status</h3>
+        <p>Report whether a session is currently recording, plus the output path and codec when active.</p>
+        <pre><code><span class="k">waymux</span> record status &lt;NAME&gt; [--json]</code></pre>
+        <pre><code><span class="c"># --json output (recording active)</span>
+{ "ok": true, "verb": "record status", "data": { "recording": true, "output": "/home/user/.local/share/waymux/recordings/demo-20260101.mkv", "codec": "ffv1" } }
+
+<span class="c"># --json output (not recording)</span>
+{ "ok": true, "verb": "record status", "data": { "recording": false } }</code></pre>
+
+        <hr>
+
+        <h2 id="viewer">Viewer</h2>
+        <p>
+          The viewer provides a browser-based WebRTC stream of a session. Local-only. The
+          <code>viewer</code> group has four subcommands: <code>start</code>,
+          <code>stop</code>, <code>status</code>, and <code>token</code>.
+        </p>
+
+        <h3>viewer start</h3>
+        <pre><code><span class="k">waymux</span> viewer start &lt;NAME&gt; [--bind ADDR] [--port N] [--json]
+<span class="k">waymux</span> viewer start demo           <span class="c"># loopback, ephemeral port</span>
+<span class="k">waymux</span> viewer start demo --bind 0.0.0.0 --port 8090  <span class="c"># LAN-accessible</span></code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bind &lt;ADDR&gt;</code></td><td><code>127.0.0.1</code></td><td>Bind address for the bridge's HTTP, WS, and WebRTC endpoints. Note: SSH local-forwarding does not pass WebRTC's UDP media plane; use a WireGuard IP or <code>0.0.0.0</code> for LAN access instead.</td></tr>
+            <tr><td><code>--port &lt;N&gt;</code></td><td>ephemeral</td><td>Explicit TCP port for the bridge. Defaults to a random free port chosen at start.</td></tr>
+          </tbody>
+        </table>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "viewer start", "data": { "url": "http://127.0.0.1:39201" } }</code></pre>
+
+        <h3>viewer stop</h3>
+        <pre><code><span class="k">waymux</span> viewer stop &lt;NAME&gt; [--json]</code></pre>
+
+        <h3>viewer status</h3>
+        <pre><code><span class="k">waymux</span> viewer status &lt;NAME&gt; [--json]</code></pre>
+        <pre><code><span class="c"># --json output (viewer active)</span>
+{ "ok": true, "verb": "viewer status", "data": { "url": "http://127.0.0.1:39201" } }
+
+<span class="c"># --json output (no viewer)</span>
+{ "ok": true, "verb": "viewer status", "data": { "url": null } }</code></pre>
+
+        <h3>viewer token</h3>
+        <p>
+          Mint an ephemeral EdDSA viewer JWT for the local/dev laptop-viewer path. Prints the
+          token, the public key the session must trust, and the expiry.
+        </p>
+        <pre><code><span class="k">waymux</span> viewer token [--json]</code></pre>
+
+        <hr>
+
+        <h2 id="idle-events-logs">Idle / events / logs</h2>
+
+        <h3>idle</h3>
+        <p>
+          Block until the session has been quiescent (no new compositor frames) for at least
+          <code>--quiet-ms</code>. Useful in scripts to wait for an animation or page-load to
+          settle before taking a screenshot.
+        </p>
+        <pre><code><span class="k">waymux</span> idle &lt;NAME&gt; [--quiet-ms N] [--timeout-ms N] [--json]
+<span class="k">waymux</span> idle demo --quiet-ms 500 --timeout-ms 10000</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--quiet-ms &lt;N&gt;</code></td><td><code>500</code></td><td>Required quiet window: how long the session must have no new frames before <code>idle</code> returns</td></tr>
+            <tr><td><code>--timeout-ms &lt;N&gt;</code></td><td><code>10000</code></td><td>Overall timeout; exits with a non-zero status if the session never reaches the quiet window</td></tr>
+          </tbody>
+        </table>
+
+        <h3>events</h3>
+        <p>
+          Stream session events as newline-delimited JSON. Local-only. Each line is one
+          envelope. Runs until interrupted (Ctrl-C). The <code>--topic</code> flag selects
+          which event topics to include; defaults to <code>sessions windows</code>.
+        </p>
+        <pre><code><span class="k">waymux</span> events &lt;NAME&gt; [--topic TOPIC...] [--json]
+<span class="k">waymux</span> events demo
+<span class="k">waymux</span> events demo --topic windows</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--topic &lt;TOPIC&gt;</code></td><td><code>sessions windows</code></td><td>Event topics to subscribe to. May be repeated. Known topics: <code>sessions</code>, <code>windows</code>.</td></tr>
+          </tbody>
+        </table>
+        <div class="note">
+          <p><code>events</code> and <code>logs</code> are streaming verbs. Under
+          <code>--json</code> they emit NDJSON (one envelope per line) rather than a single
+          terminal envelope. They are local-only and are excluded from the MCP tool surface.</p>
+        </div>
+
+        <h3>logs</h3>
+        <p>
+          Tail a session's stdout/stderr. Local-only. Add <code>-f</code> to follow (stream
+          new lines as they arrive).
+        </p>
+        <pre><code><span class="k">waymux</span> logs &lt;NAME&gt; [-f] [--settle-ms N] [--json]
+<span class="k">waymux</span> logs demo -f</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>-f / --follow</code></td><td>off</td><td>Stream new log lines as they arrive instead of printing the buffer and exiting</td></tr>
+            <tr><td><code>--settle-ms &lt;N&gt;</code></td><td><code>200</code></td><td>Settle delay before printing in non-follow mode</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2 id="attach-detach">Attach / detach</h2>
+
+        <h3>attach</h3>
+        <p>
+          Print the path of the attach Wayland socket for a session. A Wayland client launched
+          with <code>WAYLAND_DISPLAY</code> set to this path (or socket) sees the session as
+          its compositor. Local-only.
+        </p>
+        <pre><code><span class="k">waymux</span> attach &lt;NAME&gt; [--json]</code></pre>
+        <pre><code><span class="c"># --json output</span>
+{ "ok": true, "verb": "attach", "data": { "socket": "/run/user/1000/waymux/demo/wayland-0" } }</code></pre>
+
+        <h3>detach</h3>
+        <p>Mark a session as detached. Local-only.</p>
+        <pre><code><span class="k">waymux</span> detach &lt;NAME&gt; [--json]</code></pre>
+
+        <hr>
+
+        <h2 id="daemon">Daemon</h2>
+
+        <h3>serve</h3>
+        <p>
+          Run the <code>waymuxd</code> daemon in the foreground. This is a supervised
+          foreground daemon; it does not background itself. Use it under a process supervisor
+          (systemd, s6, runit) or in a container entrypoint. It resolves the <code>waymuxd</code>
+          binary via: <code>$WAYMUXD_BIN</code>, then a sibling of the <code>waymux</code>
+          binary, then <code>$PATH</code>. It replaces the current process via <code>execv</code>.
+        </p>
+        <pre><code><span class="k">waymux</span> serve [--socket PATH]</code></pre>
+        <p>
+          You usually do not need to run this explicitly. When any local verb finds no daemon
+          socket, the CLI auto-spawns a background <code>waymuxd</code> and retries. Set
+          <code>WAYMUX_NO_AUTOSPAWN=1</code> to disable auto-spawn and manage the daemon
+          yourself. An auto-spawned daemon outlives the CLI invocation; stop it with a signal
+          (<code>kill</code> or <code>pkill waymuxd</code>).
+        </p>
+
+        <hr>
+
+        <h2 id="login">Login</h2>
+        <p>
+          Authenticate against a hosted <code>waymux-api</code> endpoint and persist the
+          credentials to disk. The persisted credentials are used by <code>--remote</code>
+          verbs. No production host is baked into the OSS build; point
+          <code>--base-url</code> at your own deployment.
+        </p>
+        <pre><code><span class="k">waymux</span> login --api-key &lt;KEY&gt; --base-url &lt;URL&gt;
+<span class="k">waymux</span> login --api-key sk-... --base-url https://api.example.com</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--api-key &lt;KEY&gt;</code></td><td></td><td>API key string</td></tr>
+            <tr><td><code>--base-url &lt;URL&gt;</code></td><td><code>http://localhost:8080</code></td><td>Base URL of the remote endpoint. Persisted alongside the key and used by subsequent <code>--remote</code> invocations.</td></tr>
+          </tbody>
+        </table>
+        <div class="note">
+          <p><code>login</code> writes credentials to disk and is excluded from the MCP tool surface.</p>
+        </div>
+
+        <hr>
+
+        <h2 id="spawn">Spawn</h2>
+        <p>
+          Launch a Wayland client (or a nested compositor) inside a session. Local-only. The
+          command and its arguments are passed after a <code>--</code> separator; no shell is
+          involved so there is no shell-injection surface. The session's
+          <code>WAYLAND_DISPLAY</code> is set automatically.
+        </p>
+        <pre><code><span class="k">waymux</span> spawn &lt;NAME&gt; [--compositor] -- &lt;ARGV...&gt;
+<span class="k">waymux</span> spawn demo -- foot
+<span class="k">waymux</span> spawn demo -- chromium --ozone-platform=wayland --app=https://example.com
+<span class="k">waymux</span> spawn demo --compositor -- kwin_wayland --no-global-shortcuts</code></pre>
+        <table>
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--compositor</code></td><td>Hint that the spawned process is a nested compositor</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2 id="mcp">MCP server</h2>
+        <p>
+          <code>waymux-mcp</code> is a Model Context Protocol server that exposes the waymux
+          verb set to agents and LLM tool-use systems. It speaks MCP JSON-RPC 2.0 over stdio
+          and fulfills tool calls by exec-ing the <code>waymux</code> CLI. Every value is
+          passed as a discrete argv element; the CLI is never invoked via a shell, so there
+          is no shell-injection surface.
+        </p>
+
+        <h3>Pointing an MCP client at waymux-mcp</h3>
+        <pre><code><span class="c"># In your MCP client config (e.g. Claude Desktop / Claude Code mcp_servers):</span>
+{
+  "waymux": {
+    "command": "/usr/local/bin/waymux-mcp",
+    "args": []
+  }
+}
+
+<span class="c"># The binary resolves waymux via:</span>
+<span class="c">#   1. $WAYMUX_BIN env var</span>
+<span class="c">#   2. A `waymux` sibling next to the waymux-mcp executable</span>
+<span class="c">#   3. `waymux` on $PATH</span></code></pre>
+
+        <h3>Tool naming</h3>
+        <p>
+          Every tool is named <code>waymux_&lt;verb&gt;</code> where the verb's non-alphanumeric
+          characters are replaced by underscores. The two-word subcommands follow the same
+          scheme: <code>record start</code> becomes <code>waymux_record_start</code>,
+          <code>viewer status</code> becomes <code>waymux_viewer_status</code>.
+        </p>
+
+        <h3>Exposed tools (23 total)</h3>
+        <p>
+          The streaming verbs (<code>events</code>, <code>logs</code>) and <code>login</code>
+          are intentionally excluded. All other discrete request/response verbs are exposed.
+        </p>
+        <table>
+          <thead><tr><th>MCP tool name</th><th>CLI verb</th><th>Local-only</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>waymux_ls</code></td><td><code>ls</code></td><td></td><td>List all sessions</td></tr>
+            <tr><td><code>waymux_new</code></td><td><code>new</code></td><td></td><td>Create a session</td></tr>
+            <tr><td><code>waymux_rm</code></td><td><code>rm</code></td><td></td><td>Destroy a session</td></tr>
+            <tr><td><code>waymux_info</code></td><td><code>info</code></td><td></td><td>Show details for a session</td></tr>
+            <tr><td><code>waymux_spawn</code></td><td><code>spawn</code></td><td>yes</td><td>Launch a client inside a session</td></tr>
+            <tr><td><code>waymux_windows</code></td><td><code>windows</code></td><td></td><td>List windows, optionally filtered by tag</td></tr>
+            <tr><td><code>waymux_tag</code></td><td><code>tag</code></td><td></td><td>Replace a window's tag set</td></tr>
+            <tr><td><code>waymux_resize</code></td><td><code>resize</code></td><td>yes</td><td>Resize a session's virtual output</td></tr>
+            <tr><td><code>waymux_screenshot</code></td><td><code>screenshot</code></td><td></td><td>Capture a window as PNG (returned base64-encoded)</td></tr>
+            <tr><td><code>waymux_screenshot_desktop</code></td><td><code>screenshot-desktop</code></td><td></td><td>Composite all windows into a desktop PNG</td></tr>
+            <tr><td><code>waymux_idle</code></td><td><code>idle</code></td><td></td><td>Wait for the session to go quiescent</td></tr>
+            <tr><td><code>waymux_wait</code></td><td><code>wait</code></td><td>yes</td><td>Block until a matching window appears</td></tr>
+            <tr><td><code>waymux_key</code></td><td><code>key</code></td><td>yes</td><td>Send a synthetic key event</td></tr>
+            <tr><td><code>waymux_click</code></td><td><code>click</code></td><td>yes</td><td>Move pointer and optionally click</td></tr>
+            <tr><td><code>waymux_inject</code></td><td><code>inject</code></td><td></td><td>Inject a JSON array of input ops</td></tr>
+            <tr><td><code>waymux_attach</code></td><td><code>attach</code></td><td>yes</td><td>Return the attach Wayland socket path</td></tr>
+            <tr><td><code>waymux_detach</code></td><td><code>detach</code></td><td>yes</td><td>Mark a session as detached</td></tr>
+            <tr><td><code>waymux_record_start</code></td><td><code>record start</code></td><td>yes</td><td>Start recording to MKV</td></tr>
+            <tr><td><code>waymux_record_stop</code></td><td><code>record stop</code></td><td>yes</td><td>Stop recording</td></tr>
+            <tr><td><code>waymux_record_status</code></td><td><code>record status</code></td><td>yes</td><td>Report recording state</td></tr>
+            <tr><td><code>waymux_viewer_start</code></td><td><code>viewer start</code></td><td>yes</td><td>Start a WebRTC viewer and return its URL</td></tr>
+            <tr><td><code>waymux_viewer_stop</code></td><td><code>viewer stop</code></td><td>yes</td><td>Stop the viewer</td></tr>
+            <tr><td><code>waymux_viewer_status</code></td><td><code>viewer status</code></td><td>yes</td><td>Return the viewer URL if active</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Tool call and response shape</h3>
+        <p>
+          Tools that return image data (screenshot, screenshot-desktop) return the PNG
+          as a base64-encoded string in the <code>data.png_b64</code> field of the CLI
+          envelope. The MCP server passes the envelope JSON through verbatim as the tool
+          result content.
+        </p>
+        <pre><code><span class="c"># MCP tool call (JSON-RPC 2.0 over stdio)</span>
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "waymux_screenshot_desktop",
+               "arguments": { "name": "demo" } } }
+
+<span class="c"># MCP response (CLI envelope as content)</span>
+{ "jsonrpc": "2.0", "id": 1, "result": {
+    "content": [{ "type": "text", "text":
+      "{\"ok\":true,\"verb\":\"screenshot-desktop\",\"data\":{\"png_b64\":\"iVBOR...\"}}" }] } }</code></pre>
+
+      </article>
+
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <span>&copy; 2026 WayMux LLC &middot; Apache-2.0</span>
+    <span class="foot-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI</a>
+      <a href="guides.html">Guides</a>
+      <a href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

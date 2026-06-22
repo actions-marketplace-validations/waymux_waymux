@@ -1,89 +1,138 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>waymux</title>
-  <meta name="description" content="Headless Wayland sessions you can spawn, screenshot, record, script, and watch live in a browser, driven by a CLI and an MCP server.">
-  <style>
-    :root {
-      --bg: #0d0f12;
-      --fg: #e6e8ec;
-      --muted: #8b94a3;
-      --accent: #5ec8d8;
-      --line: #1e232b;
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--fg);
-      font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem;
-    }
-    main { max-width: 40rem; }
-    h1 {
-      font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-      font-size: 2.5rem;
-      letter-spacing: -0.02em;
-      margin: 0 0 0.75rem;
-    }
-    h1 .dot { color: var(--accent); }
-    p.tagline {
-      font-size: 1.15rem;
-      color: var(--fg);
-      margin: 0 0 1.5rem;
-    }
-    p.note { color: var(--muted); margin: 0 0 2rem; }
-    code {
-      font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-      background: #14181e;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 0.15em 0.45em;
-      color: var(--accent);
-      font-size: 0.95em;
-    }
-    .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
-    a.btn {
-      display: inline-block;
-      padding: 0.55rem 1.1rem;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      color: var(--fg);
-      text-decoration: none;
-      transition: border-color 0.15s ease, color 0.15s ease;
-    }
-    a.btn:hover { border-color: var(--accent); color: var(--accent); }
-    footer {
-      color: var(--muted);
-      font-size: 0.85rem;
-      border-top: 1px solid var(--line);
-      padding-top: 1rem;
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>waymux: headless Linux GUI sessions, driven by code or agents</title>
+<meta name="description" content="Run Linux GUI apps and full desktops in a headless, scriptable session. Drive them from your code or an AI agent, screenshot and record them, and test in CI with no GPU. Open source, Apache-2.0.">
+<meta property="og:title" content="waymux: headless Linux GUI sessions, driven by code or agents">
+<meta property="og:description" content="Launch an app or a whole Linux desktop in an off-screen session, drive it from code, and capture it as screenshots or lossless video. No GPU needed, hardware-accelerated when you have one. Open source.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://waymux.dev">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2300d9ff'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='20' font-weight='900' text-anchor='middle' fill='%23000'%3Ew%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main>
-    <h1>waymux<span class="dot">.</span></h1>
-    <p class="tagline">
-      Headless Wayland sessions you can spawn, screenshot, record, script,
-      and watch live in a browser, driven by a CLI and an MCP server.
-    </p>
-    <p class="note">
-      Open core, Apache-2.0. Runs entirely on your machine: no account,
-      no telemetry, no phone-home. A proper site lands here soon.
-    </p>
-    <div class="links">
-      <a class="btn" href="https://gitlab.com/tek.cat/waymux">Source &rarr;</a>
+
+<header class="nav">
+  <div class="container">
+    <a class="brand" href="/"><span class="brand-mark">w</span> waymux</a>
+    <nav class="nav-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI &amp; API</a>
+      <a href="guides.html">Guides</a>
+      <a href="crates.html">Crates</a>
+      <a class="ext" href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+
+    <section class="hero">
+      <p class="eyebrow">Apache-2.0 &middot; Linux GUI automation &middot; CPU and GPU</p>
+      <h1>Headless Linux GUI sessions you can <br><span class="accent">script, screenshot, and record.</span></h1>
+      <p class="lede">
+        waymux gives each session its own off-screen display, kept entirely separate from
+        your real one. Launch a single app or a whole Linux desktop, drive it from your
+        code or an AI agent, and capture it as screenshots
+        or lossless video. With no GPU it runs entirely on the CPU, so it drops straight
+        into CI. With a GPU it adds hardware-accelerated recording and live streaming.
+      </p>
+      <div class="pills">
+        <span class="pill">CPU <b>and</b> GPU</span>
+        <span class="pill"><b>lossless</b> recording</span>
+        <span class="pill">code <b>+</b> AI agents</span>
+        <span class="pill"><b>KDE</b> Plasma 6</span>
+        <span class="pill">runs <b>X11</b> apps too</span>
+      </div>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="guides.html">Get started</a>
+        <a class="btn btn-ghost" href="https://gitlab.com/tek.cat/waymux">View source</a>
+      </div>
+    </section>
+
+    <pre><code><span class="c"># One binary. The first command starts the background service for you.</span>
+<span class="k">waymux</span> new demo --size 1920x1080
+<span class="k">waymux</span> spawn demo -- foot           <span class="c"># launch an app into the session</span>
+<span class="k">waymux</span> wait demo --app-id foot
+<span class="k">waymux</span> screenshot-desktop demo -o demo.png
+<span class="k">waymux</span> record start demo            <span class="c"># lossless video</span>
+<span class="k">waymux</span> record stop demo
+<span class="k">waymux</span> rm demo</code></pre>
+
+    <h2>What you can do</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Off-screen sessions</h3>
+        <p>Each session is its own isolated display, in its own process, with nothing drawn to your real screen. Ever.</p>
+      </div>
+      <div class="card">
+        <h3>Run apps and desktops</h3>
+        <p>Open a single app (a browser, a terminal, an editor) or a whole desktop. KDE Plasma 6 and other Wayland desktops run inside a session.</p>
+      </div>
+      <div class="card">
+        <h3>Drive it from code</h3>
+        <p>Send keyboard, mouse, and touch input; wait for a window to appear. Every command speaks JSON, so it scripts cleanly.</p>
+      </div>
+      <div class="card">
+        <h3>Screenshot and record</h3>
+        <p>Capture any window or the whole desktop. Record losslessly on the CPU, or with your GPU's hardware H.264 and HEVC encoders.</p>
+      </div>
+      <div class="card">
+        <h3>Test in CI, no GPU</h3>
+        <p>It all runs in software, so you can launch real apps, click through them, and check what they drew on a stock CI runner. No GPU, no display.</p>
+      </div>
+      <div class="card">
+        <h3>Agent-ready</h3>
+        <p>An MCP server lets AI agents drive a session through the same commands you use: spin up a desktop, run a task, and replay what happened.</p>
+      </div>
     </div>
-    <footer>
-      waymux 0.2.0 &middot; Apache-2.0
-    </footer>
-  </main>
+
+    <h2>Drops into CI, no GPU</h2>
+    <p>
+      The whole stack runs without a GPU, the way a virtual display lets you test desktop
+      apps headlessly. Published Docker images bundle everything (the binaries, software
+      rendering, and a couple of real apps), and <code>waymux-run</code> is the wrapper:
+      it creates a session, runs your command against it, and saves a screenshot and a
+      recording.
+    </p>
+    <pre><code><span class="c"># Run your test command in a fresh, off-screen session.</span>
+docker run --rm --entrypoint dbus-run-session ghcr.io/waymux/waymux-ci \
+  -- waymux-run --record -- ./run-gui-tests.sh</code></pre>
+    <p>
+      There is a GitHub Action (<code>uses: waymux/waymux@v1</code>) and a GitLab CI
+      template, and the demo pipeline even renders a full KDE Plasma 6 desktop on a free
+      runner with no GPU. See the <a href="guides.html#ci">CI guide</a>.
+    </p>
+
+    <h2>Runs on your machine</h2>
+    <p>
+      waymux runs entirely on your own computer. A small per-user background service does
+      the work, reachable only by you. No account, no telemetry, no phone-home. The only
+      network access is what you turn on yourself: the optional in-browser viewer, or a
+      server you point it at.
+    </p>
+
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <span>&copy; 2026 WayMux LLC &middot; Apache-2.0</span>
+    <span class="foot-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI</a>
+      <a href="guides.html">Guides</a>
+      <a href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </span>
+  </div>
+</footer>
+
 </body>
 </html>

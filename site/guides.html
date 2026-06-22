@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guides | waymux</title>
+<meta name="description" content="Tutorials and how-tos for waymux: install, quickstart, Chromium, Plasma 6, recording, the loopback viewer, and headless CI testing with no GPU.">
+<meta property="og:title" content="Guides | waymux">
+<meta property="og:description" content="Tutorials and how-tos for waymux: install, quickstart, Chromium, Plasma 6, recording, the loopback viewer, and headless CI testing with no GPU.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://waymux.dev/guides.html">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2300d9ff'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='20' font-weight='900' text-anchor='middle' fill='%23000'%3Ew%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="container">
+    <a class="brand" href="/"><span class="brand-mark">w</span> waymux</a>
+    <nav class="nav-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI &amp; API</a>
+      <a href="guides.html" class="active">Guides</a>
+      <a href="crates.html">Crates</a>
+      <a class="ext" href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+    <div class="doc">
+
+      <aside class="toc">
+        <p class="toc-title">On this page</p>
+        <a href="#install">Install / build</a>
+        <a href="#quickstart">Quickstart</a>
+        <a class="sub" href="#json">--json output</a>
+        <a class="sub" href="#daemon">Daemon lifecycle</a>
+        <a href="#chromium">Spawn Chromium</a>
+        <a href="#plasma">Spawn Plasma 6</a>
+        <a href="#record">Record a session</a>
+        <a href="#viewer">Loopback viewer</a>
+        <a href="#ci">Headless CI (no GPU)</a>
+        <a class="sub" href="#ci-what-works">What works without a GPU</a>
+        <a class="sub" href="#ci-quickstart">CI quickstart</a>
+        <a class="sub" href="#ci-waymux-run">waymux-run</a>
+        <a class="sub" href="#ci-container">In a container</a>
+        <a class="sub" href="#ci-images">Published images</a>
+        <a class="sub" href="#ci-github">GitHub Action</a>
+        <a class="sub" href="#ci-gitlab">GitLab template</a>
+        <a class="sub" href="#ci-jobs">CI demo jobs</a>
+        <a class="sub" href="#ci-security">Security note</a>
+      </aside>
+
+      <article class="content">
+        <h1>Guides</h1>
+        <p class="lede">Tutorials and how-tos covering every major waymux workflow, from a first build to running your own GUI tests in CI with no GPU.</p>
+
+        <!-- ================================================================ -->
+        <h2 id="install">Install / build</h2>
+
+        <p>waymux is a Cargo workspace of Rust crates plus one Go module for the WebRTC viewer. You build everything from source.</p>
+
+        <h3>Requirements</h3>
+        <ul>
+          <li><strong>Rust 1.88+</strong> (the MSRV; <code>rust-toolchain.toml</code> pins the channel to <code>stable</code>, so a fresh clone fetches a current compiler automatically)</li>
+          <li><strong>Go 1.26+</strong> (only to build the WebRTC viewer bridge)</li>
+          <li><strong>ffmpeg 6.1+</strong> as system LGPL libraries (<code>libavcodec</code>, <code>libavformat</code>, etc.); this is the floor for FFV1 and the basic H.264 hardware paths. The in-process Vulkan encoder compiles against ffmpeg 6 and 7+. <code>ffv1-vulkan</code> wants a recent build; <code>hevc-vulkan-lossless</code> requires ffmpeg 8.0.</li>
+          <li>System libs: <code>libwayland-dev</code>, <code>libgbm-dev</code>, <code>libvulkan-dev</code>, <code>libxkbcommon-dev</code>, and your GPU's Vulkan / VA-API stack for hardware video encoding.</li>
+        </ul>
+
+        <div class="note warn">
+          <p><strong>Debian bookworm ships ffmpeg 5.1</strong>, which cannot compile the Vulkan FFV1 shim. Use Debian trixie (or a distro with ffmpeg 6.1+) as the build host and CI base image.</p>
+        </div>
+
+        <pre><code><span class="c"># Rust binaries: daemon, session, CLI, attach client.</span>
+<span class="k">cargo</span> build --release
+
+<span class="c"># Web viewer (Go). Produces ./waymux-neko-bridge.</span>
+( cd crates/waymux-neko-bridge && <span class="k">go</span> build -o waymux-neko-bridge . )
+
+<span class="c"># Unit tests.</span>
+<span class="k">cargo</span> test</code></pre>
+
+        <p>Release binaries land in <code>target/release/</code>: <code>waymux</code> (the CLI), <code>waymux-daemon</code>, <code>waymux-session</code>, and <code>waymux-attach</code>. Add them to your <code>PATH</code> or reference them directly.</p>
+
+        <!-- ================================================================ -->
+        <h2 id="quickstart">Quickstart</h2>
+
+        <p>The <code>waymux</code> CLI is all you need. When a local command finds no running daemon it auto-spawns one in the background and retries, so a fresh install works from a single binary.</p>
+
+        <pre><code><span class="c"># Create a 1920x1080 headless session named "demo".</span>
+<span class="c"># The first local command auto-starts a background waymuxd.</span>
+<span class="k">waymux</span> new demo --size 1920x1080
+
+<span class="c"># Spawn a Wayland-native app. Everything after -- is the argv.</span>
+<span class="k">waymux</span> spawn demo -- foot
+
+<span class="c"># Wait for the window to appear, then list windows.</span>
+<span class="k">waymux</span> wait demo --app-id foot
+<span class="k">waymux</span> windows demo
+
+<span class="c"># Screenshot a window by id (from `windows`) and the whole desktop.</span>
+<span class="k">waymux</span> screenshot demo &lt;window_id&gt; -o /tmp/window.png
+<span class="k">waymux</span> screenshot-desktop demo -o /tmp/desktop.png
+
+<span class="c"># Record a lossless FFV1 clip.</span>
+<span class="k">waymux</span> record start demo
+<span class="c"># ... drive the app ...</span>
+<span class="k">waymux</span> record stop demo
+
+<span class="c"># Tear it down.</span>
+<span class="k">waymux</span> rm demo</code></pre>
+
+        <h3 id="json">Machine-readable output (<code>--json</code>)</h3>
+
+        <p>Pass <code>--json</code> to any verb for a uniform envelope on stdout. Scripts and agents should always use this flag.</p>
+
+        <pre><code>$ <span class="k">waymux</span> --json new demo --size 1280x720
+{"ok":true,"verb":"new","data":{"name":"demo","width":1280,"height":720}}
+
+$ <span class="k">waymux</span> --json windows demo
+{"ok":true,"verb":"windows","data":{"windows":[{"window_id":1,"app_id":"foot","title":"foot"}]}}
+
+$ <span class="k">waymux</span> --json record start demo
+{"ok":true,"verb":"record","data":{"path":"/home/you/.local/share/waymux/recordings/demo-....mkv"}}</code></pre>
+
+        <p>Success is <code>{"ok":true,"verb":"...","data":{...}}</code>. Failure is <code>{"ok":false,"verb":"...","error":{"code":"E_...","message":"..."}}</code> with a non-zero exit. Screenshots return the PNG base64 in <code>data.png_b64</code>. The streaming verbs <code>events</code> and <code>logs</code> emit newline-delimited JSON instead.</p>
+
+        <h3 id="daemon">Daemon lifecycle</h3>
+
+        <p>The <code>waymux</code> CLI drives a local control daemon (<code>waymuxd</code>) over a Unix socket at <code>$WAYMUX_SOCKET</code> (default <code>$XDG_RUNTIME_DIR/waymux.sock</code>). You have three ways to run it:</p>
+
+        <ul>
+          <li><strong>Auto-spawn (default).</strong> When a local command finds the socket absent, the CLI starts a detached background <code>waymuxd</code> and retries. Auto-spawn fires only when the socket is missing: a permission error, a protocol-version mismatch, or any other connection failure is surfaced verbatim. It never fires for <code>--remote</code>.</li>
+          <li><strong><code>waymux serve</code>.</strong> Runs <code>waymuxd</code> in the foreground from the same binary. Use this under a process supervisor, or just to watch the daemon's logs in a terminal.</li>
+          <li><strong>Explicit <code>waymuxd</code>.</strong> Run the daemon yourself (<code>waymuxd</code> directly, or <code>cargo run --release -p waymux-daemon</code>).</li>
+        </ul>
+
+        <p>An auto-spawned daemon outlives the CLI command that started it and keeps your sessions alive across invocations. Stop it with a signal: Ctrl-C in the <code>waymux serve</code> terminal, or <code>pkill waymuxd</code>. To opt out of auto-spawn entirely, set <code>WAYMUX_NO_AUTOSPAWN=1</code>.</p>
+
+        <!-- ================================================================ -->
+        <h2 id="chromium">Spawn Chromium</h2>
+
+        <p>Chromium is a Wayland client. Wrap it in <code>dbus-run-session</code> (Chromium needs a session bus; without one it spams D-Bus errors and may not start) and pass the Ozone Wayland backend flags.</p>
+
+        <pre><code><span class="k">waymux</span> new web --size 1280x800
+<span class="k">waymux</span> spawn web -- dbus-run-session -- /usr/bin/chromium \
+    --ozone-platform=wayland \
+    --user-data-dir=/tmp/waymux-chromium \
+    https://example.org
+<span class="k">waymux</span> wait web --app-id chromium
+
+<span class="c"># Screenshot the whole session (no window id needed for the desktop shot).</span>
+<span class="k">waymux</span> screenshot-desktop web --output /tmp/web.png
+
+<span class="c"># Record with the zero-copy hardware encoder.</span>
+<span class="k">waymux</span> record start web
+<span class="k">waymux</span> record stop web</code></pre>
+
+        <div class="note">
+          <p><strong>Use <code>--app</code> mode for clean web-content capture.</strong> <code>--app=&lt;url&gt;</code> makes the page the toplevel Wayland surface. In normal browser mode the page renders into a subsurface that the compositor does not expose to the capture path, so a screenshot of the whole desktop will show the browser chrome but may miss web content rendered in that sub-surface.</p>
+        </div>
+
+        <div class="note warn">
+          <p><strong>Single-instance gotcha.</strong> Most browsers route to an existing host-side instance over D-Bus unless you pass a fresh profile (<code>--user-data-dir</code>). Without it, your "inner" launch silently focuses the host window instead of rendering inside the session.</p>
+        </div>
+
+        <p>On AMD hardware, the daemon defaults <code>AMD_DEBUG=nodcc</code> for spawned clients so the GPU dmabuf is importable by the Vulkan H.264 encoder (DCC-tiled buffers are not importable).</p>
+
+        <!-- ================================================================ -->
+        <h2 id="plasma">Spawn a full Plasma 6 desktop</h2>
+
+        <p>waymux can host a nested compositor as an inner client. Launch KWin (Plasma 6) into a session with its own D-Bus bus:</p>
+
+        <pre><code><span class="k">waymux</span> new kde --size 1280x720
+
+<span class="c"># Launch KWin into the session's inner socket on its own D-Bus bus.</span>
+<span class="c"># KWIN_WAYLAND_NO_PERMISSION_CHECKS lets KWin's nested backend start</span>
+<span class="c"># without a seat. On AMD, AMD_DEBUG/RADV_DEBUG=nodcc hand out a</span>
+<span class="c"># hardware-encoder-importable dmabuf modifier.</span>
+dbus-run-session -- env \
+    AMD_DEBUG=nodcc RADV_DEBUG=nodcc \
+    WAYLAND_DISPLAY=<span class="s">$XDG_RUNTIME_DIR</span>/waymux/kde/wayland.sock \
+    KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
+    XDG_CURRENT_DESKTOP=KDE QT_QPA_PLATFORM=wayland \
+    kwin_wayland --socket wayland-kwin --xwayland --no-lockscreen &amp;
+<span class="c"># Then start plasmashell (and any apps) against WAYLAND_DISPLAY=wayland-kwin</span>
+<span class="c"># inside that same bus.</span></code></pre>
+
+        <p>To record the whole nested desktop (rather than a single window), use <code>--mode whole-desktop</code>. This tees KWin's composited output dmabuf straight into the Vulkan H.264 encoder with no CPU copy, and starts immediately even over an idle desktop:</p>
+
+        <pre><code><span class="k">waymux</span> record start kde --codec h264-vulkan --mode whole-desktop --min-fps 30
+<span class="c"># ... drive the desktop ...</span>
+<span class="k">waymux</span> record stop kde</code></pre>
+
+        <p>The <code>scripts/laptop-local-viewer.sh</code> script automates the full nested-KDE plus loopback-viewer path end to end (see the <a href="#viewer">loopback viewer guide</a> below).</p>
+
+        <!-- ================================================================ -->
+        <h2 id="record">Record a session</h2>
+
+        <pre><code><span class="c"># Lossless FFV1 (default). Output lands in</span>
+<span class="c"># ~/.local/share/waymux/recordings/ by default.</span>
+<span class="k">waymux</span> record start demo
+<span class="c"># ... drive the session ...</span>
+<span class="k">waymux</span> record stop demo</code></pre>
+
+        <p><code>record start</code> defaults to lossless FFV1. Additional options:</p>
+
+        <ul>
+          <li><code>--codec h264-nvenc</code> / <code>--codec h264-vaapi</code> / <code>--codec h264-vulkan</code> for hardware H.264</li>
+          <li><code>--codec ffv1-vulkan</code> for GPU-lossless (portable across AMD and NVIDIA Vulkan-video capable devices)</li>
+          <li><code>--codec hevc-vulkan-lossless</code> for HEVC lossless (requires Vulkan-video HEVC 4:4:4 / Hi444 encode caps; not available on most integrated GPUs; <code>record start</code> fails fast with a clear error rather than producing an empty file)</li>
+          <li><code>--mode focused-window</code> (default) captures the focused Wayland surface; <code>--mode whole-desktop</code> captures the full virtual output (required for nested compositors like KWin)</li>
+          <li><code>--min-fps N</code> pads with duplicate frames to hold a minimum frame rate in the container</li>
+          <li><code>--secondary-codec</code> encodes a second output from the same frame tee</li>
+        </ul>
+
+        <div class="note">
+          <p><code>ffmpeg</code> is dynamically linked against the system LGPL libraries. The recorder uses only FFV1 and hardware encoders (no GPL x264/x265). The live viewer has an opt-in CPU x264 fallback (GPL) used only when you set <code>WAYMUX_VIEWER_CODEC=h264-software</code>.</p>
+        </div>
+
+        <div class="note warn">
+          <p><strong>Measuring real motion.</strong> <code>record</code> pads to <code>--min-fps</code> with duplicate frames. To count genuinely unique frames, strip duplicates first: <code>ffmpeg -i out.mkv -vf mpdecimate ...</code> then count. Do not trust the container fps as proof of motion.</p>
+        </div>
+
+        <!-- ================================================================ -->
+        <h2 id="viewer">Watch live in a browser (loopback viewer)</h2>
+
+        <p>A session can autostart a WebRTC web viewer on a local port. The viewer binds to <code>127.0.0.1</code> by default; binding to a non-loopback address is fail-closed (every WebSocket upgrade is rejected) unless you supply a viewer-token public key.</p>
+
+        <p>The simplest path is <code>scripts/laptop-local-viewer.sh</code>, which builds the binaries, starts a headless session with the viewer bound to loopback, nests a KDE desktop into it, and prints a URL:</p>
+
+        <pre><code><span class="c"># Loopback only (this machine):</span>
+WAYMUX_LOCAL_PORT=8082 <span class="k">bash</span> scripts/laptop-local-viewer.sh up
+<span class="c"># Open http://127.0.0.1:8082/?token=... in a browser.</span>
+
+<span class="k">bash</span> scripts/laptop-local-viewer.sh status
+<span class="k">bash</span> scripts/laptop-local-viewer.sh down</code></pre>
+
+        <p>To bind the viewer to a LAN address so another device on your network can connect, the bridge requires a signed viewer token. Mint an ephemeral one with <code>scripts/laptop-mint-viewer-token.py</code> (it generates a throwaway Ed25519 keypair, signs a short-lived token, and discards the private key). See <code>docs/laptop-local-viewer.md</code> for the full LAN walkthrough.</p>
+
+        <p>Under the hood, a session is started like this:</p>
+
+        <pre><code>WAYMUX_VIEWER_CODEC=h264-vulkan \
+WAYMUX_NEKO_BRIDGE_BIN=<span class="s">"$PWD/crates/waymux-neko-bridge/waymux-neko-bridge"</span> \
+target/release/<span class="k">waymux-session</span> --name demo --width 1280 --height 720 \
+    --inner-socket /tmp/inner.sock --control-socket /tmp/control.sock \
+    --viewer-port 8082 --viewer-bind 127.0.0.1</code></pre>
+
+        <!-- ================================================================ -->
+        <h2 id="ci">Headless CI testing (no GPU)</h2>
+
+        <p>waymux doubles as an "Xvfb for Wayland": host real GUI apps in a nested session, inject input, and assert on screenshots or a lossless recording, with no display and no GPU. The compositor does no rendering of its own, frames are captured from CPU memory, screenshots are encoded on the CPU, and FFV1 is a CPU encoder. The whole loop runs on a stock shared CI runner.</p>
+
+        <pre><code>launch app  ->  inject input  ->  screenshot + assert  ->  record (FFV1)</code></pre>
+
+        <h3 id="ci-what-works">What works without a GPU</h3>
+
+        <table>
+          <thead>
+            <tr><th>Capability</th><th>GPU needed?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Nested compositor + virtual output</td><td>no</td></tr>
+            <tr><td>Hosting Wayland + XWayland apps</td><td>no</td></tr>
+            <tr><td>Screenshot (PNG, from CPU memory)</td><td>no</td></tr>
+            <tr><td>FFV1 lossless recording (CPU codec)</td><td>no</td></tr>
+            <tr><td>Keyboard / pointer / touch injection</td><td>no</td></tr>
+            <tr><td>Live WebRTC viewer (default codecs)</td><td>yes</td></tr>
+            <tr><td>Hardware video encode (NVENC / VAAPI / Vulkan)</td><td>yes</td></tr>
+          </tbody>
+        </table>
+
+        <p>The first five capabilities cover functional, layout, input, and visual-regression testing. CI does not need the live viewer: it screenshots and records instead.</p>
+
+        <h3 id="ci-quickstart">CI quickstart (manual setup)</h3>
+
+        <p>Force software rendering and start the daemon:</p>
+
+        <pre><code><span class="k">export</span> LIBGL_ALWAYS_SOFTWARE=1      <span class="c"># Mesa software GL (llvmpipe)</span>
+<span class="k">export</span> WAYMUX_DISABLE_SYNCOBJ=1     <span class="c"># no /dev/dri =&gt; implicit sync, no DRM node</span>
+<span class="k">waymux</span> serve &amp;                      <span class="c"># or let the CLI auto-spawn the daemon</span></code></pre>
+
+        <p>Create a session and launch an app as a direct Wayland client. Point the app's <code>WAYLAND_DISPLAY</code> at the session's inner socket:</p>
+
+        <pre><code><span class="k">waymux</span> new app --size 1280x800
+INNER=<span class="s">"$XDG_RUNTIME_DIR/waymux/app/wayland.sock"</span>
+
+<span class="c"># A Qt/KDE app:</span>
+WAYLAND_DISPLAY=<span class="s">"$INNER"</span> QT_QPA_PLATFORM=wayland kwrite notes.txt &amp;
+
+<span class="c"># Or Chromium in --app mode. Use --disable-gpu flags so it renders via software.</span>
+WAYLAND_DISPLAY=<span class="s">"$INNER"</span> chromium \
+  --ozone-platform=wayland --no-sandbox --disable-gpu \
+  --disable-gpu-compositing --in-process-gpu --disable-dev-shm-usage \
+  --app=<span class="s">"file://$PWD/page.html"</span> &amp;
+
+<span class="k">waymux</span> wait app --timeout-ms 15000</code></pre>
+
+        <p>Drive it and capture the result:</p>
+
+        <pre><code><span class="k">waymux</span> key app 17                       <span class="c"># inject a keystroke (evdev keycode)</span>
+<span class="k">waymux</span> screenshot-desktop app -o shot.png
+<span class="k">waymux</span> record start app --codec ffv1    <span class="c"># lossless, CPU-encoded</span>
+<span class="c"># ... exercise the app ...</span>
+<span class="k">waymux</span> record stop app</code></pre>
+
+        <p>That is the entire testing loop, and none of it touched a GPU.</p>
+
+        <h3 id="ci-waymux-run"><code>waymux-run</code>: the xvfb-run wrapper</h3>
+
+        <p><code>waymux-run</code> is a shell script that creates a session, points <code>WAYLAND_DISPLAY</code> at it, runs your command, and always saves a screenshot (plus a lossless FFV1 recording with <code>--record</code>) into <code>ARTIFACT_DIR</code>. It exits with your command's status. Think of it as <code>xvfb-run</code> for Wayland.</p>
+
+        <pre><code><span class="c"># Basic usage:</span>
+<span class="k">waymux-run</span> -- ./run-gui-tests.sh
+
+<span class="c"># With a custom size and a recording:</span>
+<span class="k">waymux-run</span> --size 1920x1080 --record -- ./run-gui-tests.sh
+
+<span class="c"># Named session, artifacts in a specific dir:</span>
+<span class="k">waymux-run</span> --name mytest --artifacts /ci/out -- ./run-gui-tests.sh</code></pre>
+
+        <p>Options:</p>
+        <ul>
+          <li><code>--size WxH</code>: session size (default <code>1280x800</code>)</li>
+          <li><code>--record</code>: record a lossless FFV1 clip for the whole run</li>
+          <li><code>--name NAME</code>: session name (default <code>run</code>)</li>
+          <li><code>--artifacts DIR</code>: output directory (default <code>ARTIFACT_DIR</code> or <code>./waymux-artifacts</code>)</li>
+        </ul>
+
+        <p>Environment variables <code>waymux-run</code> sets automatically (you can override any of them before invoking it): <code>LIBGL_ALWAYS_SOFTWARE=1</code>, <code>GALLIUM_DRIVER=llvmpipe</code>, <code>WAYMUX_DISABLE_SYNCOBJ=1</code>. Set <code>WAYMUX_BINDIR</code> to point at the waymux binaries if they are not on <code>PATH</code>.</p>
+
+        <h3 id="ci-container">Running in a container</h3>
+
+        <p><code>tests/e2e/Dockerfile</code> builds a GPU-free image that bundles the binaries, Mesa software rendering, ffmpeg, and the apps, then runs the embedded e2e harness. It needs no <code>--gpus</code> and no <code>/dev/dri</code>:</p>
+
+        <pre><code><span class="k">docker</span> build -f tests/e2e/Dockerfile -t waymux-e2e .
+<span class="k">docker</span> run --rm waymux-e2e</code></pre>
+
+        <p>The embedded e2e (<code>tests/e2e/run-e2e-embedded.sh</code>) launches Chromium and a KDE app as direct Wayland clients under llvmpipe, asserts the captured frames have real content (a center-contrast check, so a blank frame cannot pass on the strength of a rendered toolbar), injects keystrokes and proves they changed the capture, and records FFV1, verifying the recording with <code>ffprobe</code> and counting genuinely unique frames (duplicate min-fps padding is stripped with <code>mpdecimate</code> first). Each scenario skips cleanly when its app is not installed.</p>
+
+        <pre><code><span class="k">bash</span> tests/e2e/run-e2e-embedded.sh           <span class="c"># build + run</span>
+WAYMUX_E2E_NO_BUILD=1 <span class="k">bash</span> tests/e2e/run-e2e-embedded.sh   <span class="c"># binaries already built</span></code></pre>
+
+        <h3 id="ci-images">Published images</h3>
+
+        <p>Two images are published to GHCR, Docker Hub, and the GitLab registry:</p>
+
+        <ul>
+          <li><code>waymux-ci</code>: lean image with Chromium, a Qt app, the waymux binaries, and <code>waymux-run</code></li>
+          <li><code>waymux-ci-plasma</code>: adds a full Plasma 6 desktop</li>
+        </ul>
+
+        <p>Build your app into an image based on the lean test image:</p>
+
+        <pre><code>FROM ghcr.io/waymux/waymux-ci:latest
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends my-app</code></pre>
+
+        <p>Then run your tests in plain Docker:</p>
+
+        <pre><code><span class="k">docker</span> run --rm -v <span class="s">"$PWD/out:/out"</span> -e ARTIFACT_DIR=/out \
+  --entrypoint dbus-run-session ghcr.io/waymux/waymux-ci \
+  -- waymux-run --record -- my-app-test-command
+<span class="c"># screenshot + recording land in ./out</span></code></pre>
+
+        <div class="note">
+          <p>Pass <code>--shm-size=512m</code> when Chromium is one of your test apps (it uses <code>/dev/shm</code> heavily; the Docker default is 64 MB, which causes crashes). Alternatively, pass <code>--disable-dev-shm-usage</code> to Chromium.</p>
+        </div>
+
+        <h3 id="ci-github">GitHub Action</h3>
+
+        <p>The repository doubles as a composite GitHub Action. Use it to run your GUI tests in a headless, no-GPU Wayland session:</p>
+
+        <pre><code>- <span class="k">uses</span>: waymux/waymux@v1
+  <span class="k">with</span>:
+    image: ghcr.io/me/my-app-with-waymux:latest
+    run: ./run-gui-tests.sh
+    record: <span class="s">'true'</span></code></pre>
+
+        <p>Action inputs:</p>
+
+        <table>
+          <thead>
+            <tr><th>Input</th><th>Default</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>run</code></td><td><em>required</em></td><td>Command to run inside the headless Wayland session.</td></tr>
+            <tr><td><code>image</code></td><td><code>ghcr.io/waymux/waymux-ci:latest</code></td><td>Container image. Build yours <code>FROM ghcr.io/waymux/waymux-ci</code>.</td></tr>
+            <tr><td><code>size</code></td><td><code>1280x800</code></td><td>Session size (WxH).</td></tr>
+            <tr><td><code>record</code></td><td><code>false</code></td><td>Record a lossless FFV1 clip of the run (<code>true</code>/<code>false</code>).</td></tr>
+            <tr><td><code>artifacts</code></td><td><code>waymux-artifacts</code></td><td>Directory (in the workspace) for the screenshot and recording.</td></tr>
+            <tr><td><code>upload</code></td><td><code>true</code></td><td>Upload the artifacts directory with <code>actions/upload-artifact</code>.</td></tr>
+          </tbody>
+        </table>
+
+        <p>The action runs your command inside a Docker container from <code>image</code>, wrapping it in <code>dbus-run-session</code> and <code>waymux-run</code>. The screenshot (and recording, if <code>record: 'true'</code>) are uploaded as the <code>waymux-artifacts</code> artifact by default.</p>
+
+        <h3 id="ci-gitlab">GitLab CI template</h3>
+
+        <p>Include the reusable template and extend <code>.waymux-test</code>:</p>
+
+        <pre><code><span class="k">include</span>:
+  - remote: <span class="s">'https://gitlab.com/tek.cat/waymux/-/raw/main/templates/waymux-test.gitlab-ci.yml'</span>
+
+gui-test:
+  <span class="k">extends</span>: .waymux-test
+  <span class="k">variables</span>:
+    WAYMUX_IMAGE: <span class="s">'$CI_REGISTRY_IMAGE/my-app-with-waymux:latest'</span>
+    WAYMUX_RUN: <span class="s">'./run-gui-tests.sh'</span></code></pre>
+
+        <p>Available variables (all have defaults so the template works as-is for a smoke test):</p>
+
+        <table>
+          <thead>
+            <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>WAYMUX_IMAGE</code></td><td><code>registry.gitlab.com/tek.cat/waymux/waymux-ci:latest</code></td><td>Image to run in.</td></tr>
+            <tr><td><code>WAYMUX_SIZE</code></td><td><code>1280x800</code></td><td>Session size (WxH).</td></tr>
+            <tr><td><code>WAYMUX_RECORD</code></td><td><code>0</code></td><td>Set to <code>1</code> to record a lossless FFV1 clip.</td></tr>
+            <tr><td><code>WAYMUX_RUN</code></td><td><code>kwrite --version</code></td><td>Command to run inside the session.</td></tr>
+            <tr><td><code>ARTIFACT_DIR</code></td><td><code>waymux-artifacts</code></td><td>Output directory for screenshot and recording.</td></tr>
+          </tbody>
+        </table>
+
+        <p>The template uploads artifacts on every run (<code>when: always</code>), so the screenshot is available even when the job fails.</p>
+
+        <p>If you prefer to inline the embedded e2e directly (rather than use the published image), here is the full job for GitLab CI:</p>
+
+        <pre><code>embedded-e2e:
+  stage: check
+  image: rust:1.94-trixie
+  before_script:
+    - apt-get update
+    - >
+      apt-get install -y --no-install-recommends
+      libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev
+      libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential
+      libgl1-mesa-dri libegl-mesa0 libegl1 libgles2
+      ffmpeg python3 dbus procps fonts-dejavu-core
+      chromium kwrite foot
+  script:
+    - cargo build -p waymux-cli -p waymux-daemon -p waymux-session
+    - >
+      WAYMUX_E2E_NO_BUILD=1 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+      dbus-run-session -- bash tests/e2e/run-e2e-embedded.sh</code></pre>
+
+        <p>And the equivalent for GitHub Actions (run in a Debian trixie container so <code>apt install chromium</code> is the real package):</p>
+
+        <pre><code>embedded-e2e:
+  name: embedded app e2e (software / no GPU)
+  runs-on: ubuntu-24.04
+  container: rust:1.94-trixie
+  steps:
+    - uses: actions/checkout@v4
+    - name: deps
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev \
+          libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+          libvulkan-dev libxkbcommon-dev pkg-config build-essential \
+          libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 \
+          ffmpeg python3 dbus procps fonts-dejavu-core \
+          chromium kwrite foot
+    - run: cargo build -p waymux-cli -p waymux-daemon -p waymux-session
+    - name: embedded e2e
+      env:
+        WAYMUX_E2E_NO_BUILD: <span class="s">"1"</span>
+        LIBGL_ALWAYS_SOFTWARE: <span class="s">"1"</span>
+        GALLIUM_DRIVER: llvmpipe
+      run: dbus-run-session -- bash tests/e2e/run-e2e-embedded.sh</code></pre>
+
+        <h3 id="ci-jobs">CI demo jobs and benchmark</h3>
+
+        <p>The repository ships three additional CI jobs that run on stock, GPU-less shared runners via <code>tests/e2e/ci-demo-all.sh</code> and a purpose-built demo image (<code>tests/e2e/Dockerfile.demo</code>). The demo image builds release binaries, installs Mesa llvmpipe and Plasma 6, strips the <code>cap_sys_nice</code> capability from <code>kwin_wayland</code> (unnecessary under software rendering, and it causes <code>execve</code> to fail on shared runners), and runs <code>ci-demo-all.sh</code> as its entrypoint.</p>
+
+        <ul>
+          <li><strong><code>kde-app-demo</code> (gating).</strong> Launches KWrite as a direct Wayland client against a software-rendered waymux session, asserts the screenshot has real content (not blank), injects keystrokes, records an FFV1 clip, and verifies the codec and that at least two unique frames were captured. Artifacts: <code>kde-app.png</code> and <code>kde-app.mkv</code>.</li>
+          <li><strong><code>plasma-demo</code> (allow-failure).</strong> Launches nested KWin plus plasmashell inside a waymux session under llvmpipe, waits up to 60 seconds for a desktop window to appear, screenshots the full desktop, optionally opens Dolphin (best-effort), and records a 6-second whole-desktop FFV1 clip. A failure here does not block the pipeline (Plasma under software rendering is slower and more variable than a single app). Artifacts: <code>plasma.png</code>, <code>plasma.mkv</code>, and (when Dolphin appears) <code>plasma-app.png</code>.</li>
+          <li><strong><code>benchmark</code> (gating).</strong> Sweeps four recording configurations: Chromium at 1280x720 and 1920x1080 (whole-desktop), Chromium at 1920x1080 (focused-window), and KWrite at 1920x1080 (whole-desktop). Measures screenshot latency (median of three shots) and verifies two functional gates: codec is <code>ffv1</code> and unique-frame rate is above zero (capture is not frozen). No fps or latency thresholds are enforced; this is a capability check, not a performance gate. Artifacts: <code>benchmark.md</code>, <code>benchmark.json</code>, and <code>bench-sample.mkv</code>.</li>
+        </ul>
+
+        <p>To run the same suite locally:</p>
+
+        <pre><code><span class="k">docker</span> build -f tests/e2e/Dockerfile.demo -t waymux-demo .
+<span class="k">docker</span> run --rm --shm-size=512m -v /tmp/ci-art:/artifacts waymux-demo
+ls /tmp/ci-art</code></pre>
+
+        <h3 id="ci-security">Security note</h3>
+
+        <div class="note warn">
+          <p><strong>A waymux session is a test harness, not a security sandbox.</strong> Run untrusted or third-party code in a container or VM, not in a bare session.</p>
+        </div>
+
+        <ul>
+          <li><strong>Any client in a session can screen-capture the whole session.</strong> The compositor advertises <code>wlr-screencopy</code> to every client, so a client connected to the inner <code>wayland.sock</code> can read the pixels of every other window in that session. Treat all apps sharing one session as mutually trusting; isolate untrusted apps in separate sessions, containers, or VMs.</li>
+          <li><strong>Access control depends on <code>XDG_RUNTIME_DIR</code> being <code>0700</code>.</strong> The daemon's control socket and each session's sockets are same-uid gated (<code>SO_PEERCRED</code>), but the per-session sockets live in a world-traversable directory, so their protection comes from the parent runtime dir's <code>0700</code> mode. On systemd, <code>/run/user/&lt;uid&gt;</code> is already <code>0700</code>; if you point <code>XDG_RUNTIME_DIR</code> elsewhere, keep it <code>0700</code>.</li>
+          <li><strong>No network listener is opened by the test path.</strong> The live WebRTC viewer binds <code>127.0.0.1</code> and is never started by the embedded e2e; capture and recording are entirely local.</li>
+          <li><strong>The container runs as root and Chromium with <code>--no-sandbox</code>.</strong> That is acceptable only because the image is single-tenant and renders trusted first-party content. Do not reuse it to open untrusted URLs.</li>
+        </ul>
+
+      </article>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <span>&copy; 2026 WayMux LLC &middot; Apache-2.0</span>
+    <span class="foot-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI</a>
+      <a href="guides.html">Guides</a>
+      <a href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

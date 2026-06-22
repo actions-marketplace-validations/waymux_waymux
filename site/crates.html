@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crates | waymux</title>
+<meta name="description" content="The waymux Cargo workspace: protocol and mux-mkv are the publishable libraries; waymux, waymuxd, waymux-session, and waymux-mcp are the binaries. Rust 1.88+ required.">
+<meta property="og:title" content="Crates | waymux">
+<meta property="og:description" content="The waymux Cargo workspace: protocol and mux-mkv are the publishable libraries; waymux, waymuxd, waymux-session, and waymux-mcp are the binaries. Rust 1.88+ required.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://waymux.dev/crates.html">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2300d9ff'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='20' font-weight='900' text-anchor='middle' fill='%23000'%3Ew%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="container">
+    <a class="brand" href="/"><span class="brand-mark">w</span> waymux</a>
+    <nav class="nav-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI &amp; API</a>
+      <a href="guides.html">Guides</a>
+      <a href="crates.html" class="active">Crates</a>
+      <a class="ext" href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+    <div class="doc">
+
+      <aside class="toc">
+        <p class="toc-title">On this page</p>
+        <a href="#overview">Overview</a>
+        <a href="#crate-table">All crates</a>
+        <a class="sub" href="#binaries">Binaries</a>
+        <a class="sub" href="#libraries">Libraries</a>
+        <a class="sub" href="#go">Go module</a>
+        <a href="#publishable">Publishable libraries</a>
+        <a class="sub" href="#waymux-protocol">waymux-protocol</a>
+        <a class="sub" href="#waymux-mux-mkv">waymux-mux-mkv</a>
+        <a href="#msrv">MSRV</a>
+      </aside>
+
+      <article class="content">
+        <h1>Crates</h1>
+
+        <h2 id="overview">Overview<a class="anchor" href="#overview">#</a></h2>
+        <p>
+          The waymux repository is organized as a single Cargo workspace containing all
+          Rust crates, plus one Go module. The workspace file is the root
+          <code>Cargo.toml</code>; every crate version is pinned to the workspace
+          version and shares a common edition, license, and MSRV.
+        </p>
+        <p>
+          Most crates are internal implementation details: the binaries are not
+          published to crates.io and have no stability guarantee as library surfaces.
+          Two crates, <a href="#waymux-protocol"><code>waymux-protocol</code></a> and
+          <a href="#waymux-mux-mkv"><code>waymux-mux-mkv</code></a>, are designed as
+          reusable libraries and are the crates.io publish targets. If you are
+          integrating with waymux from Rust, depend only on those two.
+        </p>
+
+        <h2 id="crate-table">All crates<a class="anchor" href="#crate-table">#</a></h2>
+
+        <h3 id="binaries">Rust binaries</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Crate</th>
+              <th>Binary</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>waymux-cli</code></td>
+              <td><code>waymux</code></td>
+              <td>The user-facing CLI: 23 subcommands that drive the daemon over a local Unix socket or a remote HTTPS transport. The canonical control surface for humans and agents alike.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-daemon</code></td>
+              <td><code>waymuxd</code></td>
+              <td>The per-user control daemon. Owns the session registry, lifecycle supervision, event broadcast, and the msgpack-RPC accept loop.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-session</code></td>
+              <td><code>waymux-session</code></td>
+              <td>One process per session. A full headless Wayland compositor with a virtual output: Wayland protocol dispatch, recording, screenshot, attach, and viewer subsystems all live here.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-attach</code></td>
+              <td><code>waymux-attach</code></td>
+              <td>Attach client that connects to an outer compositor and embeds a session's focused window into it via display-fd passing.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-mcp</code></td>
+              <td><code>waymux-mcp</code></td>
+              <td>MCP (Model Context Protocol) server. A thin stdio JSON-RPC wrapper: each of its 22 tools maps to exactly one CLI verb and runs it via argv with no shell.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 id="libraries">Rust libraries (publishable)</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Crate</th>
+              <th>Kind</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>waymux-protocol</code></td>
+              <td>library</td>
+              <td>Wire types and framing for the waymux control protocol: request, response, and event message types plus the length-prefixed msgpack codec. The source of truth for the wire format and the stable <code>E_*</code> error-code set.</td>
+            </tr>
+            <tr>
+              <td><code>waymux-mux-mkv</code></td>
+              <td>library</td>
+              <td>A small, dependency-free Matroska (MKV) muxer. Writes a single video track (FFV1, H.264, or HEVC) into a streamable <code>.mkv</code> container without pulling in a full media framework.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 id="go">Go module</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Kind</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>waymux-neko-bridge</code></td>
+              <td>Go binary</td>
+              <td>WebRTC viewer bridge (derived from neko, Apache-2.0). Spawned per session by <code>waymux-session</code>. Handles Pion WebRTC, WebSocket signaling, Ed25519 viewer-token validation, multi-viewer fan-out, GCC bandwidth feedback, and input translation.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2 id="publishable">Publishable libraries<a class="anchor" href="#publishable">#</a></h2>
+        <p>
+          Only <code>waymux-protocol</code> and <code>waymux-mux-mkv</code> are
+          intended for consumption outside the waymux tree. Both carry
+          <code>publish = true</code> (or no <code>publish</code> field, which defaults
+          to true), while every other crate in the workspace explicitly sets
+          <code>publish = false</code>.
+        </p>
+
+        <h3 id="waymux-protocol">waymux-protocol<a class="anchor" href="#waymux-protocol">#</a></h3>
+        <p>
+          The control-plane wire contract. Contains <code>RequestMethod</code> (26
+          variants), <code>Response</code>, <code>EventBody</code> (10 variants),
+          <code>SessionCtlMethod</code> (the daemon-to-session sub-protocol),
+          supporting enums (<code>ErrorCode</code>, <code>RecordingCodec</code>,
+          <code>CaptureMode</code>, <code>ScreenshotFormat</code>,
+          <code>KeyState</code>, <code>TouchPhase</code>), and
+          <code>encode_frame</code> / <code>decode_frame</code>. Serialization is
+          rmp-serde with named fields and extensive
+          <code>#[serde(default)]</code> for forward and backward compatibility. An
+          extensive round-trip test suite pins the wire contract.
+        </p>
+        <p>
+          Future home: <a href="https://crates.io/crates/waymux-protocol">crates.io/crates/waymux-protocol</a>
+          and <a href="https://docs.rs/waymux-protocol">docs.rs/waymux-protocol</a>.
+          rustdoc is the API reference once published.
+        </p>
+        <pre><code><span class="c"># Cargo.toml (once published)</span>
+<span class="o">[dependencies]</span>
+<span class="k">waymux-protocol</span> = <span class="s">"0.2"</span></code></pre>
+
+        <h3 id="waymux-mux-mkv">waymux-mux-mkv<a class="anchor" href="#waymux-mux-mkv">#</a></h3>
+        <p>
+          A streaming Matroska muxer with no dependencies beyond the Rust standard
+          library. It accepts typed NAL units or raw frame bytes and writes a compliant
+          <code>.mkv</code> file with a single video track. Useful any time you want to
+          produce MKV output in process without depending on ffmpeg or a heavyweight
+          media framework.
+        </p>
+        <p>
+          Future home: <a href="https://crates.io/crates/waymux-mux-mkv">crates.io/crates/waymux-mux-mkv</a>
+          and <a href="https://docs.rs/waymux-mux-mkv">docs.rs/waymux-mux-mkv</a>.
+          rustdoc is the API reference once published.
+        </p>
+        <pre><code><span class="c"># Cargo.toml (once published)</span>
+<span class="o">[dependencies]</span>
+<span class="k">waymux-mux-mkv</span> = <span class="s">"0.2"</span></code></pre>
+
+        <h2 id="msrv">MSRV<a class="anchor" href="#msrv">#</a></h2>
+        <p>
+          The minimum supported Rust version for the workspace is
+          <strong>1.88</strong>. The MSRV gate is tested in CI with a plain
+          <code>cargo build --workspace</code> (no dev-deps) to avoid dev-dependency
+          inflation raising the floor silently. Older toolchains will be rejected by
+          the <code>rust-version</code> field in <code>Cargo.toml</code>.
+        </p>
+        <div class="note">
+          <p>
+            <strong>Note:</strong> the MSRV is 1.88 because
+            <code>#[derive(Default)]</code> on structs containing raw pointers
+            (<code>*mut c_void</code>) requires the raw-pointer Default stabilization
+            that landed in that release.
+          </p>
+        </div>
+
+      </article>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <span>&copy; 2026 WayMux LLC &middot; Apache-2.0</span>
+    <span class="foot-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI</a>
+      <a href="guides.html">Guides</a>
+      <a href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>
