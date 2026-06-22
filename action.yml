@@ -27,6 +27,12 @@ inputs:
     description: 'Upload the artifacts directory with actions/upload-artifact (true/false).'
     required: false
     default: 'true'
+
+outputs:
+  artifacts-path:
+    description: 'Path to the directory with the screenshot (and recording, when record is true).'
+    value: ${{ inputs.artifacts }}
+
 runs:
   using: 'composite'
   steps:
