@@ -17,7 +17,8 @@ variables:
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
 
 # Shared Rust setup: the session crate's build.rs links gbm + avutil and
-# compiles a small ffmpeg C shim, and wayland-server needs libwayland headers.
+# compiles a small ffmpeg C shim (via bindgen, which needs clang/libclang), and
+# wayland-server needs libwayland headers.
 .rust-deps: &rust-deps
   before_script:
     - apt-get update
@@ -25,7 +26,7 @@ variables:
       apt-get install -y --no-install-recommends
       libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev
       libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
-      libvulkan-dev libxkbcommon-dev pkg-config build-essential
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev
   cache:
     key: "$CI_JOB_NAME"
     paths:
