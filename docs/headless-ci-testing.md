@@ -216,10 +216,22 @@ mpv out/bench-sample.mkv      # the recorded animated clip
 ```
 
 Software FFV1 throughput is dominated by whole-desktop frame readback, not CPU
-cores: a 16-thread laptop and a ~4-vCPU GitHub runner both land near **10 unique
-fps** for a whole-desktop 1080p capture, while focused-window capture is several
-times faster and does scale with the machine. The exact per-run numbers (and the
-clip) are in each build's `benchmark` artifact.
+cores. The same harness, `unique_fps` (FFV1 lossless, llvmpipe, no GPU):
+
+| config | GitLab (EPYC 7B13, 2 vCPU) | GitHub (EPYC 7763, 4 vCPU) | laptop (Ryzen 5700U, 16T) |
+|--------|---------------------------|----------------------------|---------------------------|
+| Chromium 1280x720 whole-desktop  | 10.0 | 10.1 | 9.9 |
+| Chromium 1920x1080 whole-desktop | 9.7  | 9.9  | 9.9 |
+| Chromium 1920x1080 focused-window | 15.5 | 36.3 | 43.2 |
+| KWrite 1920x1080 whole-desktop    | 7.6  | 7.8  | 8.0 |
+
+Whole-desktop capture pins near 10 fps regardless of core count (2 -> 4 -> 16):
+it is bounded by synchronous frame readback on the compositor thread, not by the
+CPU. Focused-window capture is several times faster and *does* scale with the
+machine. Practical guidance: to record a single app smoothly, use
+`--mode focused-window`; whole-desktop is for capturing the broader session at a
+steady ~10 fps. The exact per-run numbers and the recorded clip are in each
+build's `benchmark` artifact.
 
 ## Notes
 
