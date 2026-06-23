@@ -25,6 +25,7 @@
       <a href="architecture.html">Architecture</a>
       <a href="cli.html">CLI &amp; API</a>
       <a href="guides.html">Guides</a>
+      <a href="benchmarks.html">Benchmarks</a>
       <a href="crates.html">Crates</a>
       <a class="ext" href="https://gitlab.com/tek.cat/waymux">Source</a>
     </nav>
@@ -82,7 +83,7 @@
       </div>
       <div class="card">
         <h3>Screenshot and record</h3>
-        <p>Capture any window or the whole desktop. Record losslessly on the CPU, or with your GPU's hardware H.264 and HEVC encoders.</p>
+        <p>Capture any window or the whole desktop. Record lossless FFV1 in software (~36 fps for a focused app, ~10 fps whole-desktop, no GPU) or with your GPU's hardware H.264 and HEVC encoders. <a href="benchmarks.html">See the benchmarks</a>.</p>
       </div>
       <div class="card">
         <h3>Test in CI, no GPU</h3>
@@ -129,10 +130,16 @@ docker run --rm --entrypoint dbus-run-session ghcr.io/waymux/waymux-ci \
       <a href="architecture.html">Architecture</a>
       <a href="cli.html">CLI</a>
       <a href="guides.html">Guides</a>
+      <a href="benchmarks.html">Benchmarks</a>
       <a href="https://gitlab.com/tek.cat/waymux">Source</a>
     </span>
   </div>
 </footer>
 
+<script>
+  // easter egg: the glowing 3D logo, rendered in software WebGL
+  console.log('%c✦ waymux', 'color:#00d9ff;font:700 16px monospace');
+  console.log('%cthe glowing one lives at /logo.html', 'color:#5b6b70;font:13px monospace');
+</script>
 </body>
 </html>

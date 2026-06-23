@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Benchmarks | waymux</title>
+<meta name="description" content="Honest, reproducible recording benchmarks for waymux: lossless FFV1 throughput across CI runners, and a head-to-head against the standard Xvfb + ffmpeg approach. Software-rendered, no GPU.">
+<meta property="og:title" content="Benchmarks | waymux">
+<meta property="og:description" content="Reproducible lossless-recording benchmarks across CI runners, no GPU, with the test clips attached.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2300d9ff'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='20' font-weight='900' text-anchor='middle' fill='%23000'%3Ew%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="container">
+    <a class="brand" href="/"><span class="brand-mark">w</span> waymux</a>
+    <nav class="nav-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="cli.html">CLI &amp; API</a>
+      <a href="guides.html">Guides</a>
+      <a href="benchmarks.html" class="active">Benchmarks</a>
+      <a href="crates.html">Crates</a>
+      <a class="ext" href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+
+    <h1>Benchmarks</h1>
+    <p class="lede">
+      Reproducible numbers, software-rendered, no GPU. Everything below is measured
+      by the harness in <code>tests/e2e/</code> and you can re-run it yourself.
+    </p>
+
+    <div class="note">
+      <p><strong>Honest metric.</strong> We report <code>unique_fps</code>: genuinely
+      distinct frames per second, counted with <code>ffmpeg mpdecimate</code>. A
+      recording's nominal/container fps pads toward a minimum rate with duplicate
+      frames, so it overstates motion and is not comparable across tools.</p>
+    </div>
+
+    <h2>Recording throughput across CI runners</h2>
+    <p>
+      The same harness (<code>tests/e2e/ci-bench.sh</code>) recording a lossless FFV1
+      clip of an animated page, on three machines:
+    </p>
+    <table>
+      <thead><tr>
+        <th>config (FFV1, software)</th>
+        <th>GitLab<br>EPYC 7B13, 2&nbsp;vCPU</th>
+        <th>GitHub<br>EPYC 7763, 4&nbsp;vCPU</th>
+        <th>laptop<br>Ryzen 5700U, 16T</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Chromium 720p whole-desktop</td><td>10.0</td><td>10.1</td><td>9.9</td></tr>
+        <tr><td>Chromium 1080p whole-desktop</td><td>9.7</td><td>9.9</td><td>9.9</td></tr>
+        <tr><td>Chromium 1080p <b>focused-window</b></td><td>15.5</td><td>36.3</td><td>43.2</td></tr>
+        <tr><td>KWrite 1080p whole-desktop</td><td>7.6</td><td>7.8</td><td>8.0</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Whole-desktop capture pins near <b>10 unique fps regardless of core count</b>
+      (2 &rarr; 4 &rarr; 16): it is bounded by synchronous frame readback on the
+      compositor thread, not the CPU. Focused-window capture is several times faster
+      and scales with the machine. Practical guidance: record a single app in
+      <code>--mode focused-window</code> for the smoothest clip; whole-desktop is for
+      capturing the broader session at a steady ~10 fps.
+    </p>
+
+    <h2>Lossless recording: waymux vs the standard X11 approach</h2>
+    <p>
+      Same machine, same page (the deliberately demanding
+      <a href="logo.html">software-WebGL waymux logo</a>), 1280x720, 8&nbsp;seconds, no
+      GPU. waymux focused-window FFV1 vs the usual headless-CI recipe (Xvfb +
+      <code>ffmpeg x11grab</code> + x264 <code>-qp 0</code> lossless). Unique fps:
+    </p>
+    <table>
+      <thead><tr><th>method (lossless)</th><th>laptop<br>16 threads</th><th>GitHub runner<br>4 vCPU</th></tr></thead>
+      <tbody>
+        <tr><td><b>waymux</b> focused-window (FFV1)</td><td>26.3</td><td>6.5</td></tr>
+        <tr><td>Xvfb + ffmpeg x11grab (x264)</td><td>22.9</td><td>10.6</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Honest result: <b>it depends on the machine.</b> With cores to spare (16-thread
+      laptop) waymux's zero-copy per-frame capture is more faithful and edges ahead
+      (26 vs 23). On a constrained 4-vCPU runner recording this brutal WebGL source,
+      waymux's FFV1 plus compositor pipeline saturates all four cores and falls behind
+      x11grab's lighter x264 (6.5 vs 10.6), which also writes smaller files.
+    </p>
+    <div class="note warn">
+      <p>So waymux is <b>not</b> the leanest way to record a single browser losslessly
+      on a small runner: Xvfb + x264 is lighter there. waymux's wins are elsewhere: it
+      is Wayland-native, records <b>any</b> app (not just X11) per-window, needs no
+      Xvfb/ffmpeg plumbing, and pairs recording with spawn, input, and screenshots in
+      one tool. A lighter CPU codec for constrained runners is an obvious next step.</p>
+    </div>
+
+    <h2>Reproduce it</h2>
+    <p>No checkout needed: the published image carries the harness:</p>
+    <pre><code><span class="c"># recording throughput sweep (table 1)</span>
+docker run --rm --shm-size=512m -e RECORD_SECS=10 -e ARTIFACT_DIR=/out \
+  -v "$PWD/out:/out" --entrypoint dbus-run-session \
+  ghcr.io/waymux/waymux-ci -- bash /app/tests/e2e/ci-bench.sh
+cat out/benchmark.md</code></pre>
+    <p>
+      The head-to-head additionally needs Xvfb (<code>apt-get install -y xvfb</code>
+      inside the image); the GitHub workflow does exactly that and attaches both clips.
+    </p>
+
+    <h2>The test content</h2>
+    <p>
+      The head-to-head page is a glowing 3D <b>w</b> rendered in <b>software WebGL</b>
+      (SwiftShader, no GPU), demanding enough to stress the full render +
+      capture pipeline, and a fun thing to watch.
+      <a href="logo.html">Open it &rarr;</a>
+    </p>
+
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <span>&copy; 2026 WayMux LLC &middot; Apache-2.0</span>
+    <span class="foot-links">
+      <a href="architecture.html">Architecture</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <a href="guides.html">Guides</a>
+      <a href="https://gitlab.com/tek.cat/waymux">Source</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>
