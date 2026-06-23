@@ -458,6 +458,10 @@ enum Cmd {
 enum CodecArg {
     /// Lossless FFV1 in MKV. Default. ~70 MB / minute at 1080p.
     Ffv1,
+    /// Lossless H.264 (RGB) via libx264rgb (`-qp 0 -preset ultrafast`).
+    /// CPU-encoded like FFV1 but lighter and multithreaded, so it sustains a
+    /// higher fps on small CI runners and writes smaller files. Bit-exact RGB.
+    X264Lossless,
     /// H.264 via NVIDIA NVENC. Lossy, ~5 MB / minute. NVIDIA GPU only.
     H264Nvenc,
     /// H.264 via libva VAAPI. Lossy, ~5 MB / minute. AMD/Intel GPU.
@@ -490,6 +494,7 @@ impl From<CodecArg> for RecordingCodec {
     fn from(c: CodecArg) -> Self {
         match c {
             CodecArg::Ffv1 => RecordingCodec::Ffv1,
+            CodecArg::X264Lossless => RecordingCodec::X264Lossless,
             CodecArg::H264Nvenc => RecordingCodec::H264Nvenc,
             CodecArg::H264Vaapi => RecordingCodec::H264Vaapi,
             CodecArg::H264Vulkan => RecordingCodec::H264Vulkan,

@@ -77,27 +77,43 @@ XDG_RUNTIME_DIR="$(mktemp -d /tmp/wmx-h2h-run.XXXXXX)"; chmod 700 "$XDG_RUNTIME_
 wmx_pick_bindir
 waymuxd >"$WORK/daemon.log" 2>&1 & DPID=$!
 for _ in $(seq 1 400); do [ -S "$XDG_RUNTIME_DIR/waymux.sock" ] && break; sleep 0.05; done
-if waymux --json new h2h --size "$RES" >"$WORK/a-new.json" 2>&1 && [ "$(jget '["ok"]' <"$WORK/a-new.json")" = "True" ]; then
-  INNER="$XDG_RUNTIME_DIR/waymux/h2h/wayland.sock"
-  WAYLAND_DISPLAY="$INNER" setsid $CHROMIUM --ozone-platform=wayland $CR_COMMON \
-    --user-data-dir="$WORK/wmx-h2h-a" --window-size="$W,$H" --app="$PAGE_URL" \
-    >"$WORK/a-cr.log" 2>&1 & APG=$!
-  if [ "$(wait_window h2h chromium)" -ge 1 ] 2>/dev/null; then
-    waymux idle h2h --quiet-ms 600 --timeout-ms 6000 >/dev/null 2>&1 || true
-    waymux --json record start h2h --codec ffv1 --mode focused-window --min-fps 60 >"$WORK/a-rec.json" 2>&1
-    RECP=$(jget '["data"]["path"]' <"$WORK/a-rec.json" 2>/dev/null)
-    read ct0 ci0 < <(cpu_busy); sleep "$RECORD_SECS"; read ct1 ci1 < <(cpu_busy)
-    waymux --json record stop h2h >/dev/null 2>&1
-    waymux idle h2h --quiet-ms 800 --timeout-ms 2500 >/dev/null 2>&1 || true
-    A_CPU=$(python3 -c "dt=${ct1}-${ct0}; di=${ci1}-${ci0}; print('%.1f'%(((dt-di)/dt*${NPROC}) if dt>0 else 0))")
-    if [ -n "$RECP" ] && [ -f "$RECP" ]; then cp "$RECP" "$ARTIFACT_DIR/waymux-focused.mkv"; read A_U A_N A_MB A_C <<<"$(analyze "$RECP")"; WA_OK=1; fi
+
+# Sweep one or more waymux lossless codecs (fresh session + page each).
+WAYMUX_CODECS="${WAYMUX_CODECS:-ffv1 x264-lossless}"
+idx=0
+for CODEC in $WAYMUX_CODECS; do
+  idx=$((idx + 1)); sess="h2h${idx}"; APG=""
+  echo "  -- waymux --codec ${CODEC} --"
+  if waymux --json new "$sess" --size "$RES" >"$WORK/a-${idx}-new.json" 2>&1 \
+     && [ "$(jget '["ok"]' <"$WORK/a-${idx}-new.json")" = "True" ]; then
+    INNER="$XDG_RUNTIME_DIR/waymux/${sess}/wayland.sock"
+    WAYLAND_DISPLAY="$INNER" setsid $CHROMIUM --ozone-platform=wayland $CR_COMMON \
+      --user-data-dir="$WORK/wmx-h2h-a-${idx}" --window-size="$W,$H" --app="$PAGE_URL" \
+      >"$WORK/a-${idx}-cr.log" 2>&1 & APG=$!
+    if [ "$(wait_window "$sess" chromium)" -ge 1 ] 2>/dev/null; then
+      waymux idle "$sess" --quiet-ms 600 --timeout-ms 6000 >/dev/null 2>&1 || true
+      waymux --json record start "$sess" --codec "$CODEC" --mode focused-window --min-fps 60 \
+        >"$WORK/a-${idx}-rec.json" 2>&1
+      RECP=$(jget '["data"]["path"]' <"$WORK/a-${idx}-rec.json" 2>/dev/null)
+      read ct0 cb0 < <(cpu_busy); sleep "$RECORD_SECS"; read ct1 cb1 < <(cpu_busy)
+      waymux --json record stop "$sess" >/dev/null 2>&1
+      waymux idle "$sess" --quiet-ms 800 --timeout-ms 2500 >/dev/null 2>&1 || true
+      A_CPU=$(python3 -c "dt=${ct1}-${ct0}; di=${cb1}-${cb0}; print('%.1f'%(((dt-di)/dt*${NPROC}) if dt>0 else 0))")
+      if [ -n "$RECP" ] && [ -f "$RECP" ]; then
+        cp "$RECP" "$ARTIFACT_DIR/waymux-${CODEC}.mkv"
+        read A_U A_N A_MB A_C <<<"$(analyze "$RECP")"
+        echo "  waymux/${CODEC}: uniq=$A_U nom=$A_N mb=$A_MB cpu=${A_CPU}/${NPROC} codec=$A_C"
+        ROWS="${ROWS}| waymux focused-window (${CODEC}) | ${A_U} | ${A_N} | ${A_MB} | ${A_CPU} | ${A_C} |
+"
+      else
+        echo "  waymux/${CODEC}: FAILED (no file; see $WORK/a-${idx}-rec.json)"
+      fi
+    fi
+    waymux --json rm "$sess" >/dev/null 2>&1 || true
   fi
-  waymux --json rm h2h >/dev/null 2>&1 || true
-fi
-kill -9 -- "-$APG" 2>/dev/null || true; kill "$DPID" 2>/dev/null || true
-[ "$WA_OK" = 1 ] && { echo "  waymux: uniq=$A_U nom=$A_N mb=$A_MB cpu=${A_CPU}/${NPROC} codec=$A_C"; \
-  ROWS="${ROWS}| waymux focused-window (FFV1) | ${A_U} | ${A_N} | ${A_MB} | ${A_CPU} | ${A_C} |
-"; } || echo "  waymux: FAILED/again (see $WORK)"
+  [ -n "$APG" ] && { kill -9 -- "-$APG" 2>/dev/null || true; }
+done
+kill "$DPID" 2>/dev/null || true
 
 # ============================================================================
 # B) Xvfb + ffmpeg x11grab, lossless x264

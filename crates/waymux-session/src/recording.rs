@@ -351,6 +351,7 @@ fn encoder_name(codec: waymux_protocol::RecordingCodec) -> &'static str {
     use waymux_protocol::RecordingCodec;
     match codec {
         RecordingCodec::Ffv1 => "ffv1",
+        RecordingCodec::X264Lossless => "libx264rgb",
         RecordingCodec::H264Nvenc => "h264_nvenc",
         RecordingCodec::H264Vaapi => "h264_vaapi",
         // Vulkan paths don't go through ffmpeg; placeholders for any
@@ -1757,7 +1758,17 @@ fn build_ffmpeg_argv(
     // skip ffmpeg's single-threaded swscale BGRA→NV12 stage (the encoder-
     // side ceiling at 4K). Ffv1 stays BGRA (lossless capture format).
     let push_nv12 = matches!(codec, RecordingCodec::H264Nvenc | RecordingCodec::H264Vaapi);
-    let input_pix_fmt = if push_nv12 { "nv12" } else { "bgra" };
+    // #4 (shave a copy): libx264rgb consumes bgr0 natively, so labelling the
+    // BGRA capture buffer as bgr0 (recording is opaque, so the alpha byte is the
+    // ignored X) skips ffmpeg's per-frame bgra->bgr0 swscale conversion — the
+    // same trick that keeps the x11grab path lean.
+    let input_pix_fmt = if push_nv12 {
+        "nv12"
+    } else if matches!(codec, RecordingCodec::X264Lossless) {
+        "bgr0"
+    } else {
+        "bgra"
+    };
     argv.extend([
         "-f".into(),
         "rawvideo".into(),
@@ -1780,7 +1791,37 @@ fn build_ffmpeg_argv(
     // Per-codec encoding args.
     match codec {
         RecordingCodec::Ffv1 => {
-            argv.extend(["-vcodec".into(), "ffv1".into(), "-level".into(), "3".into()]);
+            // `-slices`/`-threads` parallelise FFV1 across cores. Without them
+            // ffmpeg's ffv1 encoder runs single-threaded, which is the encode
+            // ceiling that drops frames on multi-core CI runners. Slice count
+            // bounds the parallelism; 4 keeps a small image's slice overhead low
+            // while saturating the typical 2-4 vCPU runner.
+            argv.extend([
+                "-vcodec".into(),
+                "ffv1".into(),
+                "-level".into(),
+                "3".into(),
+                "-slices".into(),
+                "4".into(),
+                "-threads".into(),
+                "0".into(),
+            ]);
+        }
+        RecordingCodec::X264Lossless => {
+            // RGB-lossless H.264 via libx264rgb (bit-exact, no chroma
+            // subsampling). Much lighter per frame and inherently multithreaded
+            // vs FFV1, so it sustains a higher fps on constrained runners and
+            // writes smaller files. ffmpeg converts the BGRA input to gbrp.
+            argv.extend([
+                "-vcodec".into(),
+                "libx264rgb".into(),
+                "-qp".into(),
+                "0".into(),
+                "-preset".into(),
+                "ultrafast".into(),
+                "-threads".into(),
+                "0".into(),
+            ]);
         }
         RecordingCodec::H264Nvenc => {
             // Bitrate scales with pixel count so 4K hero clips don't look like
@@ -2004,10 +2045,34 @@ fn recording_thread(
         }
     };
 
+    // ── Decouple feed from encode (#3) ────────────────────────────────────
+    //
+    // A dedicated writer thread owns ffmpeg's stdin and drains a small bounded
+    // channel, so the capture loop can take + convert the next frame while the
+    // writer is blocked on the pipe. The bounded blocking channel back-pressures
+    // capture (no busy-spin) while the latest-only slot keeps dropping stale
+    // frames, so the encoder stays the only throughput limit.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
+    let writer = std::thread::Builder::new()
+        .name("waymux-rec-writer".into())
+        .spawn(move || {
+            while let Ok(frame) = rx.recv() {
+                if stdin.write_all(&frame).is_err() {
+                    break;
+                }
+            }
+            drop(stdin); // EOF → ffmpeg finalizes the container
+        })
+        .expect("spawn recording writer thread");
+
     let first_wire = to_wire(first_pixels, first_w, first_h);
-    if let Err(e) = stdin.write_all(&first_wire) {
-        warn!(error = %e, "recording: ffmpeg stdin write failed (first frame)");
-        drop(stdin);
+    // Cache the latest wire frame for the min-fps duplication path only, so the
+    // default commit-driven mode pays no extra clone.
+    let keep_last = min_fps.filter(|n| *n > 0).is_some();
+    let mut last_pixels: Vec<u8> = if keep_last { first_wire.clone() } else { Vec::new() };
+    if tx.send(first_wire).is_err() {
+        warn!("recording: writer thread exited before the first frame");
+        let _ = writer.join();
         let _ = child.wait();
         return;
     }
@@ -2029,10 +2094,6 @@ fn recording_thread(
         .filter(|n| *n > 0)
         .map(|n| std::time::Duration::from_micros(1_000_000 / n as u64));
     let take_timeout = min_frame_interval.unwrap_or(std::time::Duration::from_millis(200));
-    // Cache of the last successfully-encoded pixels for the duplication
-    // path. Holds wire-format bytes (NV12 for h264 codecs, BGRA for ffv1)
-    // so the min-fps duplication path doesn't re-run the conversion.
-    let mut last_pixels: Vec<u8> = first_wire;
     let mut last_log = std::time::Instant::now();
     loop {
         if stop.load(Ordering::Acquire) {
@@ -2069,11 +2130,15 @@ fn recording_thread(
             );
             break;
         }
-        if let Err(e) = stdin.write_all(&wire_pixels) {
-            warn!(error = %e, "recording: ffmpeg stdin write failed");
+        if keep_last {
+            last_pixels = wire_pixels.clone();
+        }
+        // Blocking send: back-pressure when the encoder is behind (the slot
+        // drops stale frames meanwhile), so capture never busy-spins.
+        if tx.send(wire_pixels).is_err() {
+            warn!("recording: writer thread exited; stopping");
             break;
         }
-        last_pixels = wire_pixels;
         frames += 1;
 
         if last_log.elapsed() >= std::time::Duration::from_secs(2) {
@@ -2090,8 +2155,10 @@ fn recording_thread(
         }
     }
 
-    // ── Shutdown: close stdin → ffmpeg finalizes MKV ──────────────────────
-    drop(stdin);
+    // ── Shutdown: close the channel → writer drains it, closes stdin →
+    // ffmpeg finalizes the MKV. ──────────────────────────────────────────
+    drop(tx);
+    let _ = writer.join();
     let _ = child.wait();
     info!(path = %path, frames, "recording stopped");
 }

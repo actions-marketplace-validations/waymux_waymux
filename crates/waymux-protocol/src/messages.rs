@@ -465,6 +465,12 @@ pub enum RecordingCodec {
     /// The default — preserves exact pixels for visual-regression CI.
     #[default]
     Ffv1,
+    /// Lossless H.264 (RGB) via `libx264rgb -qp 0 -preset ultrafast` inside
+    /// MKV. CPU-encoded like `Ffv1` but much lighter per frame and inherently
+    /// multithreaded, so it sustains a higher fps on constrained (few-core) CI
+    /// runners, and files are smaller than FFV1. Bit-exact RGB (no chroma
+    /// subsampling). The lean CPU-lossless option for headless CI recording.
+    X264Lossless,
     /// H.264 via NVENC (NVIDIA hardware encoder). Lossy, ~5 MB / minute.
     /// Requires an NVIDIA GPU with NVENC + ffmpeg built `--enable-nvenc`.
     H264Nvenc,
