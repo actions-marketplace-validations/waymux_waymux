@@ -76,31 +76,36 @@
 
     <h2>Lossless recording: waymux vs the standard X11 approach</h2>
     <p>
-      Same machine, same page (the deliberately demanding
+      Same machine, same page (the demanding
       <a href="logo.html">software-WebGL waymux logo</a>), 1280x720, 8&nbsp;seconds, no
-      GPU. waymux focused-window FFV1 vs the usual headless-CI recipe (Xvfb +
-      <code>ffmpeg x11grab</code> + x264 <code>-qp 0</code> lossless). Unique fps:
+      GPU. waymux focused-window vs the usual headless-CI recipe (Xvfb +
+      <code>ffmpeg x11grab</code> + x264 <code>-qp 0</code>). Unique fps on a 4-vCPU
+      GitHub runner, before and after a recording-pipeline pass:
     </p>
     <table>
-      <thead><tr><th>method (lossless)</th><th>laptop<br>16 threads</th><th>GitHub runner<br>4 vCPU</th></tr></thead>
+      <thead><tr><th>method (lossless)</th><th>before</th><th>after</th></tr></thead>
       <tbody>
-        <tr><td><b>waymux</b> focused-window (FFV1)</td><td>26.3</td><td>6.5</td></tr>
-        <tr><td>Xvfb + ffmpeg x11grab (x264)</td><td>22.9</td><td>10.6</td></tr>
+        <tr><td>waymux focused-window (FFV1)</td><td>6.5</td><td>5.8</td></tr>
+        <tr><td><b>waymux focused-window (x264-lossless)</b></td><td>n/a</td><td><b>11.1</b></td></tr>
+        <tr><td>Xvfb + ffmpeg x11grab (x264)</td><td>10.6</td><td>10.8</td></tr>
       </tbody>
     </table>
     <p>
-      Honest result: <b>it depends on the machine.</b> With cores to spare (16-thread
-      laptop) waymux's zero-copy per-frame capture is more faithful and edges ahead
-      (26 vs 23). On a constrained 4-vCPU runner recording this brutal WebGL source,
-      waymux's FFV1 plus compositor pipeline saturates all four cores and falls behind
-      x11grab's lighter x264 (6.5 vs 10.6), which also writes smaller files.
+      The original FFV1 path lost to x11grab on a constrained runner (6.5 vs 10.6):
+      FFV1 is a heavier CPU encoder, and the WebGL source already saturates the four
+      cores, so multithreading FFV1 did not help here. Adding a CPU
+      <b>x264-lossless</b> codec (libx264rgb, bit-exact RGB, fed bgr0 to skip a
+      conversion, with a writer thread decoupling the pipe) closes the gap:
+      <b>waymux now matches x11grab</b> (11.1 vs 10.8) at the same CPU and file size.
+      The same parity holds on a 16-thread laptop (x264-lossless and x11grab within a
+      frame of each other, both ahead of FFV1).
     </p>
-    <div class="note warn">
-      <p>So waymux is <b>not</b> the leanest way to record a single browser losslessly
-      on a small runner: Xvfb + x264 is lighter there. waymux's wins are elsewhere: it
-      is Wayland-native, records <b>any</b> app (not just X11) per-window, needs no
-      Xvfb/ffmpeg plumbing, and pairs recording with spawn, input, and screenshots in
-      one tool. A lighter CPU codec for constrained runners is an obvious next step.</p>
+    <div class="note">
+      <p>So you get x11grab-class lossless throughput <b>and</b> waymux's integration:
+      Wayland-native, any app per-window, no Xvfb/ffmpeg plumbing, and recording paired
+      with spawn, input, and screenshots in one tool. FFV1 stays the default for
+      exact-pixel determinism; reach for <code>--codec x264-lossless</code> on small
+      runners.</p>
     </div>
 
     <h2>Reproduce it</h2>
