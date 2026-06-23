@@ -41,13 +41,31 @@ variables:
       - target/
 
 # Heavy Rust jobs run only when code actually changes, never on tags (a tag
-# pipeline is just the image publish), and always on a manual web run. This is
-# what keeps docs/site/CI-only pushes from spending build minutes.
+# pipeline is just the image publish). This keeps docs/site/CI-only pushes from
+# spending build minutes.
 .code-changes: &code-changes
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
-    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$RUN_BENCH == "1"'
+      when: never
+    - changes:
+        - 'crates/**/*'
+        - 'Cargo.toml'
+        - 'rust-toolchain.toml'
+        - 'deny.toml'
+        - 'tests/**/*'
+        - 'ci/**/*'
+
+# The benchmark also runs on demand when a pipeline starts with RUN_BENCH=1
+# (glab ci run --variables RUN_BENCH:1, or "Run pipeline" in the UI with that
+# variable set), so you can regenerate the numbers + recorded clip without a code
+# push and without dragging in the rest of the heavy suite.
+.bench-rules: &bench-rules
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$RUN_BENCH == "1"'
     - changes:
         - 'crates/**/*'
         - 'Cargo.toml'
@@ -239,7 +257,7 @@ plasma-demo:
 benchmark:
   stage: check
   image: rust:1.94-trixie
-  <<: [*rust-deps, *code-changes]
+  <<: [*rust-deps, *bench-rules]
   before_script:
     - apt-get update
     - >
@@ -323,7 +341,6 @@ publish-images:
     entrypoint: [""]
   rules:
     - if: '$CI_COMMIT_TAG'
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   parallel:
     matrix:
       - { IMAGE: waymux-ci,        DOCKERFILE: tests/e2e/Dockerfile }

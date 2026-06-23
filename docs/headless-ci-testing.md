@@ -192,22 +192,34 @@ Artifacts: `plasma.png`, `plasma.mkv`, and (when Dolphin appears)
 **`benchmark` (gating).** Runs `tests/e2e/ci-bench.sh`, which sweeps four
 recording configurations: Chromium at 1280x720 and 1920x1080 (whole-desktop),
 Chromium at 1920x1080 (focused-window), and KWrite at 1920x1080
-(whole-desktop). For each configuration it measures screenshot latency (median
-of three shots), starts an FFV1 recording, and verifies two functional gates:
-the codec is `ffv1` and the unique-frame rate is above zero (capture is not
-frozen). No fps or latency thresholds are enforced; this is a capability check,
-not a performance gate. Failure blocks the pipeline. Artifacts: `benchmark.md`
-(a markdown table with one row per configuration), `benchmark.json` (the same
-rows as a JSON array), and `bench-sample.mkv` (the first successful recording).
+(whole-desktop). The Chromium configs render an animated page (a per-frame
+counter plus sweeping elements) so every captured frame is genuinely distinct.
+For each configuration it records a lossless FFV1 clip and reports the
+**unique** frame rate (distinct frames per second, via `ffmpeg mpdecimate`)
+next to the nominal container rate (which pads toward `--min-fps` with
+duplicates), plus screenshot latency. Functional gates: the codec is `ffv1` and
+the unique-frame rate is above zero (capture is not frozen). No fps threshold is
+enforced; this is a capability check, not a performance gate. Failure blocks the
+pipeline. Artifacts: `benchmark.md` (host specs plus a row per configuration),
+`benchmark.json` (the same, structured), and `bench-sample.mkv` (a saved
+recording of the animated page), all downloadable straight from the build.
 
-All three jobs upload their artifacts with the matching job name. To run the
-same suite locally:
+Reproduce it anywhere with the published image (no GPU, no checkout needed):
 
 ```sh
-docker build -f tests/e2e/Dockerfile.demo -t waymux-demo .
-docker run --rm --shm-size=512m -v /tmp/ci-art:/artifacts waymux-demo
-ls /tmp/ci-art
+mkdir -p out
+docker run --rm --shm-size=512m -e RECORD_SECS=10 -e ARTIFACT_DIR=/out \
+  -v "$PWD/out:/out" --entrypoint dbus-run-session \
+  ghcr.io/waymux/waymux-ci -- bash /app/tests/e2e/ci-bench.sh
+cat out/benchmark.md          # numbers + host specs
+mpv out/bench-sample.mkv      # the recorded animated clip
 ```
+
+Software FFV1 throughput is dominated by whole-desktop frame readback, not CPU
+cores: a 16-thread laptop and a ~4-vCPU GitHub runner both land near **10 unique
+fps** for a whole-desktop 1080p capture, while focused-window capture is several
+times faster and does scale with the machine. The exact per-run numbers (and the
+clip) are in each build's `benchmark` artifact.
 
 ## Notes
 

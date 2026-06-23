@@ -96,16 +96,46 @@ fi
 cat >"$WORK/page.html" <<'HTML'
 <!doctype html><meta charset=utf-8><title>waymux bench</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden}
-  body{background:linear-gradient(135deg,#e1004b,#0a84ff);
-       display:flex;align-items:center;justify-content:center}
-  .t{font:bold 72px/1.15 sans-serif;color:#fff;text-align:center;
-     text-shadow:0 6px 30px rgba(0,0,0,.6);z-index:2}
-  .b{position:absolute;top:42%;left:0;width:150px;height:150px;border-radius:20px;
-     background:#000;opacity:.85;animation:m 1.5s linear infinite alternate}
-  @keyframes m{from{left:4%}to{left:78%}}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a0a0a;font-family:sans-serif}
+  /* Full-width fine-stripe band across the exact vertical centre. The non-blank
+     screenshot gate samples the centre crop; the band guarantees high-contrast
+     edges there in any capture mode, while the counter + boxes provide motion. */
+  #band{position:absolute;top:calc(50% - 90px);left:0;width:100%;height:180px;
+        background:repeating-linear-gradient(90deg,#fff 0 7px,#101014 7px 14px)}
+  #wrap{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;
+        align-items:center;justify-content:center;
+        text-shadow:0 0 16px #000,0 0 16px #000,0 4px 12px #000}
+  #title{font:bold 52px/1 sans-serif;color:#00d9ff;letter-spacing:3px}
+  #frame{font:bold 150px/1 monospace;color:#fff;font-variant-numeric:tabular-nums}
+  #sub{font:20px/1 monospace;color:#ddd;margin-top:8px}
+  #bar{position:absolute;top:0;left:0;height:10px;background:#00d9ff;z-index:3;width:0}
+  .box{position:absolute;width:120px;height:120px;border-radius:18px;z-index:1}
+  #b1{background:#e1004b}#b2{background:#0a84ff}
 </style>
-<div class=b></div><div class=t>WAYMUX<br>CI BENCH</div>
+<div id=band></div>
+<div id=wrap>
+  <div id=title>WAYMUX CI BENCH</div>
+  <div id=frame>00000</div>
+  <div id=sub>frames captured under llvmpipe, no GPU</div>
+</div>
+<div id=bar></div><div class=box id=b1></div><div class=box id=b2></div>
+<script>
+  // A per-frame counter makes every rendered frame distinct, so the recording's
+  // unique-frame count is the real captured fps; the boxes and top bar sweep so
+  // motion is obvious in the saved clip.
+  let n = 0, t0 = performance.now();
+  const fr = document.getElementById('frame'), bar = document.getElementById('bar'),
+        b1 = document.getElementById('b1'), b2 = document.getElementById('b2');
+  function tick(t) {
+    n++; fr.textContent = String(n).padStart(5, '0');
+    const W = innerWidth, H = innerHeight, p = (((t - t0) / 3000) % 1);
+    bar.style.width = (p * W) + 'px';
+    b1.style.left = (p * (W - 120)) + 'px';       b1.style.top = (H * 0.18) + 'px';
+    b2.style.left = ((1 - p) * (W - 120)) + 'px'; b2.style.top = (H * 0.72) + 'px';
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
 HTML
 
 # --- KWrite pre-filled document ----------------------------------------------
@@ -318,9 +348,25 @@ print('%.2f' % (u/d if d>0 else 0))")
 
 done
 
+# --- Host specs (makes results reproducible + comparable across runners) -----
+HOST_NPROC="$(nproc 2>/dev/null || echo '?')"
+HOST_CPU="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//' || echo '?')"
+HOST_MEM="$(awk '/MemTotal/{printf "%.1f GiB", $2/1048576}' /proc/meminfo 2>/dev/null || echo '?')"
+HOST_KERNEL="$(uname -sr 2>/dev/null || echo '?')"
+HOST_RENDERER="llvmpipe (Mesa software, no GPU)"
+
 # --- Write benchmark.md ------------------------------------------------------
 {
-  echo "# waymux CI benchmark"
+  echo "# waymux headless recording benchmark"
+  echo ""
+  echo "Lossless FFV1, software-rendered (llvmpipe), no GPU. \`uniq_fps\` counts"
+  echo "genuinely distinct frames (ffmpeg mpdecimate); \`nom_fps\` is the container's"
+  echo "nominal rate (padded toward --min-fps with duplicate frames)."
+  echo ""
+  echo "- host: ${HOST_CPU}, ${HOST_NPROC} threads, ${HOST_MEM}"
+  echo "- kernel: ${HOST_KERNEL}"
+  echo "- renderer: ${HOST_RENDERER}"
+  echo "- record_secs: ${RECORD_SECS}"
   echo ""
   echo "| config | screenshot_ms | uniq_fps | nom_fps | file_mb | codec |"
   echo "|--------|---------------|----------|---------|---------|-------|"
@@ -328,7 +374,11 @@ done
 } >"$ARTIFACT_DIR/benchmark.md"
 
 # --- Write benchmark.json ----------------------------------------------------
-printf '[%s]\n' "$JSON_ROWS" >"$ARTIFACT_DIR/benchmark.json"
+{
+  printf '{"host":{"cpu":"%s","threads":"%s","mem":"%s","kernel":"%s","renderer":"%s"},' \
+    "$HOST_CPU" "$HOST_NPROC" "$HOST_MEM" "$HOST_KERNEL" "$HOST_RENDERER"
+  printf '"record_secs":%s,"configs":[%s]}\n' "$RECORD_SECS" "$JSON_ROWS"
+} >"$ARTIFACT_DIR/benchmark.json"
 
 echo ""
 echo "===== ci-bench: $PASS passed, $FAIL failed ====="
