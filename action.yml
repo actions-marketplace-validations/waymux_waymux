@@ -1,5 +1,5 @@
 name: 'waymux test'
-description: 'Run a command in a headless, no-GPU waymux Wayland session and collect screenshots plus a recording.'
+description: 'Wayland-native GUI testing for CI, no GPU: run your app in a headless session, then screenshot it and record lossless video.'
 branding:
   icon: 'monitor'
   color: 'purple'
