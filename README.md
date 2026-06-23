@@ -265,7 +265,10 @@ waymux record start demo
 waymux record stop demo
 ```
 
-`record start` defaults to lossless FFV1. Pass `--codec h264-nvenc` or
+`record start` defaults to lossless FFV1. Pass `--codec x264-lossless` for a
+leaner CPU-lossless encode (RGB-lossless libx264rgb; higher fps and much smaller
+files than FFV1 on a small runner, matching the Xvfb + ffmpeg x11grab approach),
+or `--codec h264-nvenc` or
 `--codec h264-vaapi` (and Vulkan-encode variants) for hardware H.264/HEVC, plus
 `--mode focused-window|whole-desktop`, `--min-fps` for steady pacing, and
 `--secondary-codec` to encode a second output from the same frames. For
@@ -275,9 +278,10 @@ expose, so `record start` fails fast with a clear error there rather than
 producing an empty file. (The
 separate `WAYMUX_VIEWER_CODEC` env var selects the live *viewer's* codec, not
 the recorder's.) ffmpeg is dynamically linked against the system LGPL libraries.
-The recorder invokes only FFV1 and hardware encoders (no GPL x264/x265); the
-live viewer additionally has an opt-in CPU x264 fallback (libx264, GPL) used
-only when you set `WAYMUX_VIEWER_CODEC=h264-software`.
+The recorder defaults to FFV1 (LGPL-only). `--codec x264-lossless` additionally
+drives your system ffmpeg's libx264 (GPL) through the subprocess, so it works
+only where ffmpeg was built with libx264; waymux itself never links it. The live
+viewer has the same opt-in CPU x264 (GPL) via `WAYMUX_VIEWER_CODEC=h264-software`.
 
 ## Headless CI testing (no GPU)
 

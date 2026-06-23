@@ -214,6 +214,7 @@ dbus-run-session -- env \
         <p><code>record start</code> defaults to lossless FFV1. Additional options:</p>
 
         <ul>
+          <li><code>--codec x264-lossless</code> for leaner CPU-lossless recording (RGB-lossless libx264rgb): higher fps and much smaller files than FFV1 on a small runner, matching the Xvfb + ffmpeg x11grab approach. Needs a libx264-enabled ffmpeg. See the <a href="benchmarks.html">benchmarks</a>.</li>
           <li><code>--codec h264-nvenc</code> / <code>--codec h264-vaapi</code> / <code>--codec h264-vulkan</code> for hardware H.264</li>
           <li><code>--codec ffv1-vulkan</code> for GPU-lossless (portable across AMD and NVIDIA Vulkan-video capable devices)</li>
           <li><code>--codec hevc-vulkan-lossless</code> for HEVC lossless (requires Vulkan-video HEVC 4:4:4 / Hi444 encode caps; not available on most integrated GPUs; <code>record start</code> fails fast with a clear error rather than producing an empty file)</li>
@@ -223,7 +224,7 @@ dbus-run-session -- env \
         </ul>
 
         <div class="note">
-          <p><code>ffmpeg</code> is dynamically linked against the system LGPL libraries. The recorder uses only FFV1 and hardware encoders (no GPL x264/x265). The live viewer has an opt-in CPU x264 fallback (GPL) used only when you set <code>WAYMUX_VIEWER_CODEC=h264-software</code>.</p>
+          <p><code>ffmpeg</code> is dynamically linked against the system LGPL libraries, and the recorder defaults to FFV1 (LGPL-only). <code>--codec x264-lossless</code> additionally drives your system ffmpeg's libx264 (GPL) through the subprocess, so it works only where ffmpeg was built with libx264; waymux itself never links it. The live viewer has the same opt-in CPU x264 (GPL) via <code>WAYMUX_VIEWER_CODEC=h264-software</code>.</p>
         </div>
 
         <div class="note warn">

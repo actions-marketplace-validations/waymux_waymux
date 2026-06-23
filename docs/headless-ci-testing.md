@@ -10,10 +10,13 @@ encoded on the CPU, and the default recording codec (FFV1) is a CPU encoder. The
 whole loop runs green on a stock shared CI runner.
 
 Screenshots are the cheap, immediate primitive: encoding one is fast on the CPU.
-Recording works on the CPU too, but only around 10 frames per second, so treat a
+Recording works on the CPU too. The default FFV1 codec runs around 10 frames per
+second on a small runner; `--codec x264-lossless` (RGB-lossless libx264rgb) is the
+leaner CPU-lossless option, roughly doubling that and matching the usual Xvfb +
+ffmpeg x11grab recipe at a fraction of the file size (see the
+[benchmarks](https://waymux.dev/benchmarks.html)). Either way, treat a software
 recording as a record of what happened (a handy failure artifact), not smooth
-video. For high-frame-rate or performance-sensitive recording, add a GPU and a
-hardware encoder.
+video; for high-frame-rate recording, add a GPU and a hardware encoder.
 
 ```
   launch app  ->  inject input  ->  screenshot + assert  ->  record (FFV1)
@@ -72,7 +75,8 @@ Drive it and capture the result:
 ```sh
 waymux key app 17                       # inject a keystroke (evdev keycode)
 waymux screenshot-desktop app -o shot.png
-waymux record start app --codec ffv1    # lossless, CPU-encoded
+waymux record start app --codec ffv1            # lossless, CPU-encoded (exact-pixel)
+# or: --codec x264-lossless                      # leaner CPU-lossless, much smaller files
 # ... exercise the app ...
 waymux record stop app
 ```

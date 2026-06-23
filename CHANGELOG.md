@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New `--codec x264-lossless` recording codec: RGB-lossless H.264 (libx264rgb,
+  `-qp 0 -preset ultrafast`). CPU-encoded like FFV1 but lighter, inherently
+  multithreaded, and much smaller files; on a constrained CI runner it roughly
+  doubles FFV1's unique-frame throughput and reaches parity with the usual
+  Xvfb + ffmpeg x11grab recipe. Requires a libx264-enabled ffmpeg (driven via
+  the subprocess; waymux itself does not link it).
+
+### Changed
+
+- FFV1 recording is now multithreaded (`-slices 4 -threads 0`); it was
+  single-threaded, the encode ceiling on multi-core runners.
+- A dedicated writer thread now owns ffmpeg's stdin so frame capture and
+  conversion overlap the pipe write (the encoder is the only throughput limit).
+- The x264 path feeds ffmpeg `bgr0` (libx264rgb-native) to skip a per-frame
+  `bgra -> bgr0` swscale conversion.
+
 ### Fixed
 
 - `record start --codec hevc-vulkan-lossless` now fails fast with a clear error

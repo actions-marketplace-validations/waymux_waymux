@@ -1,9 +1,9 @@
 name: recording head-to-head
 
-# waymux (focused-window, lossless FFV1) vs Xvfb + ffmpeg x11grab (lossless
-# x264) recording the SAME animated page on the SAME runner, software-only, no
-# GPU. Uploads both clips + a comparison table. Runs on demand or when the
-# harness / logo / this file changes.
+# waymux (focused-window; lossless FFV1 + x264-lossless) vs Xvfb + ffmpeg
+# x11grab (lossless x264) recording the SAME animated page on the SAME runner,
+# software-only, no GPU. Uploads the clips + a comparison table. Runs on demand
+# or when the harness / logo / this file changes.
 on:
   workflow_dispatch:
   push:

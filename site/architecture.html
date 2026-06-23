@@ -225,14 +225,15 @@
 
         <h3 id="recording">Recording</h3>
         <p>
-          Four backends are available. The choice of codec determines whether a GPU is needed:
+          Several backends are available. The choice of codec determines whether a GPU is needed:
         </p>
         <table>
           <thead>
             <tr><th>Codec</th><th>Backend</th><th>GPU needed</th><th>Notes</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>ffv1</code></td><td>CPU readback</td><td>No</td><td>Lossless, default for CI</td></tr>
+            <tr><td><code>ffv1</code></td><td>CPU readback</td><td>No</td><td>Lossless, default for CI (exact-pixel)</td></tr>
+            <tr><td><code>x264-lossless</code></td><td>CPU readback (libx264rgb)</td><td>No</td><td>Lossless, lean; matches x11grab on small runners</td></tr>
             <tr><td><code>h264-nvenc</code></td><td>NVENC subprocess</td><td>Yes (NVIDIA)</td><td>H.264 hardware encode</td></tr>
             <tr><td><code>h264-vaapi</code></td><td>In-process VAAPI</td><td>Yes</td><td>H.264 hardware encode</td></tr>
             <tr><td><code>h264-vulkan</code> / <code>hevc-vulkan</code></td><td>In-process Vulkan</td><td>Yes</td><td>Zero-copy, fastest</td></tr>

@@ -381,7 +381,8 @@
         <table>
           <thead><tr><th>Codec</th><th>Lossless</th><th>Requires</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td><code>ffv1</code></td><td>yes</td><td>CPU / llvmpipe</td><td>Default. ~70 MB/min at 1080p. Preferred for CI visual-regression artifacts.</td></tr>
+            <tr><td><code>ffv1</code></td><td>yes</td><td>CPU / llvmpipe</td><td>Default. ~70 MB/min at 1080p. Exact-pixel; preferred for CI visual-regression artifacts.</td></tr>
+            <tr><td><code>x264-lossless</code></td><td>yes</td><td>CPU / llvmpipe</td><td>RGB-lossless H.264 (libx264rgb). Lighter, multithreaded, and much smaller files than FFV1; matches Xvfb + ffmpeg x11grab on a constrained runner. The lean CPU-lossless option for CI. <a href="benchmarks.html">Benchmarks</a>.</td></tr>
             <tr><td><code>h264-nvenc</code></td><td>no</td><td>NVIDIA GPU</td><td>~5 MB/min. Preferred for marketing screencasts.</td></tr>
             <tr><td><code>h264-vaapi</code></td><td>no</td><td>AMD/Intel GPU + libva</td><td>~5 MB/min.</td></tr>
             <tr><td><code>h264-vulkan</code></td><td>no</td><td>Vulkan video encode (NVIDIA 535+, AMD Mesa 25+, Intel Mesa 24.3+)</td><td>Zero ffmpeg subprocess, zero-copy on capable hardware.</td></tr>
